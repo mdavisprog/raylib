@@ -499,7 +499,11 @@ const char *TextFormat(const char *text, ...);              // Formatting of tex
 #endif // !SUPPORT_MODULE_RTEXT
 
 #if defined(PLATFORM_DESKTOP)
-    #define PLATFORM_DESKTOP_GLFW
+    #if defined(WITH_DIRECTX)
+        #define PLATFORM_DESKTOP_WINDOWS
+    #else
+        #define PLATFORM_DESKTOP_GLFW
+    #endif
 #endif
 
 // Include platform-specific submodules
@@ -509,6 +513,8 @@ const char *TextFormat(const char *text, ...);              // Formatting of tex
     #include "platforms/rcore_desktop_sdl.c"
 #elif defined(PLATFORM_DESKTOP_RGFW)
     #include "platforms/rcore_desktop_rgfw.c"
+#elif defined(PLATFORM_DESKTOP_WINDOWS)
+    #include "platforms/rcore_desktop_windows.c"
 #elif defined(PLATFORM_WEB)
     #include "platforms/rcore_web.c"
 #elif defined(PLATFORM_DRM)
