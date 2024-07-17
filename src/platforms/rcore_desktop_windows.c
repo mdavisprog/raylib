@@ -46,7 +46,7 @@
 *
 **********************************************************************************************/
 
-// TODO: Include the platform specific libraries
+#include "rcore_desktop_windows_impl.h"
 
 //----------------------------------------------------------------------------------
 // Types and Structures Definition
@@ -425,39 +425,22 @@ int InitPlatform(void)
     // raylib uses OpenGL so, platform should create that kind of connection
     // Below example illustrates that process using EGL library
     //----------------------------------------------------------------------------
-    CORE.Window.fullscreen = true;
-    CORE.Window.flags |= FLAG_FULLSCREEN_MODE;
-
-    if (CORE.Window.flags & FLAG_MSAA_4X_HINT)
+    if (Windows_Initialize() != 0)
     {
-        TRACELOG(LOG_INFO, "DISPLAY: Trying to enable MSAA x4");
-    }
-
-    // Check surface and context activation
-    TRACELOG(LOG_ERROR, "CHECK FOR RESULT HERE!");
-    if (false)
-    {
-        CORE.Window.ready = true;
-
-        CORE.Window.render.width = CORE.Window.screen.width;
-        CORE.Window.render.height = CORE.Window.screen.height;
-        CORE.Window.currentFbo.width = CORE.Window.render.width;
-        CORE.Window.currentFbo.height = CORE.Window.render.height;
-
-        TRACELOG(LOG_INFO, "DISPLAY: Device initialized successfully");
-        TRACELOG(LOG_INFO, "    > Display size: %i x %i", CORE.Window.display.width, CORE.Window.display.height);
-        TRACELOG(LOG_INFO, "    > Screen size:  %i x %i", CORE.Window.screen.width, CORE.Window.screen.height);
-        TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
-        TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
-    }
-    else
-    {
-        TRACELOG(LOG_FATAL, "PLATFORM: Failed to initialize graphics device");
+        TRACELOG(LOG_INFO, "WINDOWS: Failed to initialize Windows subsystem!");
         return -1;
     }
-    //----------------------------------------------------------------------------
+
+    if (Windows_CreateWindow(CORE.Window.title, CORE.Window.screen.width, CORE.Window.screen.height) != 0)
+    {
+        TRACELOG(LOG_ERROR, "WINDOWS: Failed to create window!");
+        return -1;
+    }
+
+    // TODO: Initialize DirectX here.
 
     // If everything work as expected, we can continue
+    CORE.Window.ready = true;
     CORE.Window.render.width = CORE.Window.screen.width;
     CORE.Window.render.height = CORE.Window.screen.height;
     CORE.Window.currentFbo.width = CORE.Window.render.width;
@@ -495,7 +478,7 @@ int InitPlatform(void)
 // Close platform
 void ClosePlatform(void)
 {
-    // TODO: De-initialize graphics, inputs and more
+    Windows_Close();
 }
 
 // EOF

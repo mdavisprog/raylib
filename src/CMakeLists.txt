@@ -38,6 +38,13 @@ set(raylib_sources
     utils.c
     )
 
+if(WITH_DIRECTX)
+    set(raylib_sources
+        ${raylib_sources}
+        platforms/rcore_desktop_windows_impl.c
+        )
+endif()
+
 # <root>/cmake/GlfwImport.cmake handles the details around the inclusion of glfw
 if (NOT ${PLATFORM} MATCHES "Web")
     include(GlfwImport)
