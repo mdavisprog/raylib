@@ -37,4 +37,7 @@ int Windows_Initialize();
 void Windows_Close();
 int Windows_CreateWindow(const char* title, int width, int height);
 
+int DirectX_Initialize();
+void DirectX_Shutdown();
+
 #endif // RCORE_DESKTOP_WINDOWS_IMPL_H

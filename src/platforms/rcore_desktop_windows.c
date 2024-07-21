@@ -437,7 +437,14 @@ int InitPlatform(void)
         return -1;
     }
 
-    // TODO: Initialize DirectX here.
+    int Result = DirectX_Initialize();
+    if (Result != 0)
+    {
+        TRACELOG(LOG_ERROR, "DIRECTX: Failed to initialize!");
+        return -1;
+    }
+
+    TRACELOG(LOG_INFO, "DIRECTX: Initialized!");
 
     // If everything work as expected, we can continue
     CORE.Window.ready = true;
@@ -478,6 +485,7 @@ int InitPlatform(void)
 // Close platform
 void ClosePlatform(void)
 {
+    DirectX_Shutdown();
     Windows_Close();
 }
 
