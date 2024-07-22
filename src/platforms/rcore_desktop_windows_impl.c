@@ -55,6 +55,15 @@ typedef struct
     ID3D12Device9* device;
     IDXGIFactory7* factory;
     IDXGIAdapter1* adapter;
+    ID3D12CommandQueue* commandQueue;
+    ID3D12CommandAllocator* commandAllocator;
+    ID3D12CommandList* commandList;
+    ID3D12DescriptorHeap* descriptorHeapSRV;
+    UINT descriptorHeapSize;
+    ID3D12RootSignature* rootSignature;
+    ID3D12Fence* fence;
+    UINT fenceValue;
+    HANDLE fenceEvent;
 } PlatformData;
 
 static PlatformData platform = { 0 };
@@ -224,6 +233,132 @@ int DirectX_Initialize()
         return -1;
     }
 
+
+    D3D12_COMMAND_QUEUE_DESC commandQueueDesc = { 0 };
+    commandQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    commandQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    result = platform.device->lpVtbl->CreateCommandQueue(platform.device, &commandQueueDesc, &IID_ID3D12CommandQueue, (LPVOID*)&platform.commandQueue);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create command queue!\n");
+        return -1;
+    }
+
+    result = platform.device->lpVtbl->CreateCommandAllocator(platform.device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (LPVOID*)&platform.commandAllocator);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create command allocator!\n");
+        return -1;
+    }
+
+    result = platform.device->lpVtbl->CreateCommandList(platform.device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, platform.commandAllocator, NULL, &IID_ID3D12CommandList, (LPVOID*)&platform.commandList);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create command list!\n");
+        return -1;
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { 0 };
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors = 100;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    result = platform.device->lpVtbl->CreateDescriptorHeap(platform.device, &heapDesc, &IID_ID3D12DescriptorHeap, (LPVOID*)&platform.descriptorHeapSRV);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create descriptor heap!\n");
+        return -1;
+    }
+
+    platform.descriptorHeapSize = platform.device->lpVtbl->GetDescriptorHandleIncrementSize(platform.device, heapDesc.Type);
+
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE Feature = { D3D_ROOT_SIGNATURE_VERSION_1_1 };
+    result = platform.device->lpVtbl->CheckFeatureSupport(platform.device, D3D12_FEATURE_ROOT_SIGNATURE, &Feature, sizeof(Feature));
+    if (FAILED(result))
+    {
+        Feature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_DESCRIPTOR_RANGE1 descriptorRanges[2];
+    descriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    descriptorRanges[0].NumDescriptors = 1;
+    descriptorRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    descriptorRanges[0].BaseShaderRegister = 0;
+    descriptorRanges[0].RegisterSpace = 0;
+    descriptorRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    descriptorRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    descriptorRanges[1].NumDescriptors = 1;
+    descriptorRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    descriptorRanges[1].BaseShaderRegister = 0;
+    descriptorRanges[1].RegisterSpace = 0;
+    descriptorRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER1 parameters[2];
+    parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    parameters[0].DescriptorTable.NumDescriptorRanges = 1;
+    parameters[0].DescriptorTable.pDescriptorRanges = &descriptorRanges[0];
+
+    parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    parameters[1].DescriptorTable.pDescriptorRanges = &descriptorRanges[1];
+
+    D3D12_STATIC_SAMPLER_DESC sampler = { 0 };
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.MipLODBias = 0.0f;
+    sampler.MaxAnisotropy = 0;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc = { 0 };
+    rootSignatureDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    rootSignatureDesc.Desc_1_1.NumParameters = _countof(parameters);
+    rootSignatureDesc.Desc_1_1.pParameters = parameters;
+    rootSignatureDesc.Desc_1_1.NumStaticSamplers = 1;
+    rootSignatureDesc.Desc_1_1.pStaticSamplers = &sampler;
+    rootSignatureDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob* signature = NULL;
+    ID3DBlob* error = NULL;
+    result = D3D12SerializeVersionedRootSignature(&rootSignatureDesc, &signature, &error);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to serialize versioned root signature! Error: %s\n", (LPCSTR)error->lpVtbl->GetBufferPointer(error));
+        return -1;
+    }
+
+    result = platform.device->lpVtbl->CreateRootSignature(platform.device, 0, signature->lpVtbl->GetBufferPointer(signature),
+        signature->lpVtbl->GetBufferSize(signature), &IID_ID3D12RootSignature, (LPVOID*)&platform.rootSignature);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create root signature!\n");
+        return -1;
+    }
+
+    result = platform.device->lpVtbl->CreateFence(platform.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (LPVOID*)&platform.fence);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create fence!\n");
+        return -1;
+    }
+    platform.fenceValue = 0;
+
+    platform.fenceEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (platform.fenceEvent == NULL)
+    {
+        printf("DIRECTX: Failed to create fence event!\n");
+        return -1;
+    }
+
     DXGI_ADAPTER_DESC1 desc = { 0 };
     if (FAILED(platform.adapter->lpVtbl->GetDesc1(platform.adapter, &desc)))
     {
@@ -240,7 +375,23 @@ int DirectX_Initialize()
 
 void DirectX_Shutdown()
 {
+    platform.fence->lpVtbl->Release(platform.fence);
+    platform.rootSignature->lpVtbl->Release(platform.rootSignature);
+    platform.descriptorHeapSRV->lpVtbl->Release(platform.descriptorHeapSRV);
+    platform.commandList->lpVtbl->Release(platform.commandList);
+    platform.commandAllocator->lpVtbl->Release(platform.commandAllocator);
+    platform.commandQueue->lpVtbl->Release(platform.commandQueue);
     platform.adapter->lpVtbl->Release(platform.adapter);
     platform.factory->lpVtbl->Release(platform.factory);
     platform.device->lpVtbl->Release(platform.device);
+
+    platform.fence = NULL;
+    platform.rootSignature = NULL;
+    platform.descriptorHeapSRV = NULL;
+    platform.commandList = NULL;
+    platform.commandAllocator = NULL;
+    platform.commandQueue = NULL;
+    platform.adapter = NULL;
+    platform.factory = NULL;
+    platform.device = NULL;
 }
