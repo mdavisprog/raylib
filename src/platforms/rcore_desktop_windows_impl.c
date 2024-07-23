@@ -49,6 +49,8 @@
 #include <stdlib.h>
 #include <Windows.h>
 
+#define DXRELEASE(object) object->lpVtbl->Release(object); object = NULL
+
 typedef struct
 {
     HWND handle;
@@ -375,23 +377,13 @@ int DirectX_Initialize()
 
 void DirectX_Shutdown()
 {
-    platform.fence->lpVtbl->Release(platform.fence);
-    platform.rootSignature->lpVtbl->Release(platform.rootSignature);
-    platform.descriptorHeapSRV->lpVtbl->Release(platform.descriptorHeapSRV);
-    platform.commandList->lpVtbl->Release(platform.commandList);
-    platform.commandAllocator->lpVtbl->Release(platform.commandAllocator);
-    platform.commandQueue->lpVtbl->Release(platform.commandQueue);
-    platform.adapter->lpVtbl->Release(platform.adapter);
-    platform.factory->lpVtbl->Release(platform.factory);
-    platform.device->lpVtbl->Release(platform.device);
-
-    platform.fence = NULL;
-    platform.rootSignature = NULL;
-    platform.descriptorHeapSRV = NULL;
-    platform.commandList = NULL;
-    platform.commandAllocator = NULL;
-    platform.commandQueue = NULL;
-    platform.adapter = NULL;
-    platform.factory = NULL;
-    platform.device = NULL;
+    DXRELEASE(platform.fence);
+    DXRELEASE(platform.rootSignature);
+    DXRELEASE(platform.descriptorHeapSRV);
+    DXRELEASE(platform.commandList);
+    DXRELEASE(platform.commandAllocator);
+    DXRELEASE(platform.commandQueue);
+    DXRELEASE(platform.adapter);
+    DXRELEASE(platform.factory);
+    DXRELEASE(platform.device);
 }
