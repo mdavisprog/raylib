@@ -179,6 +179,17 @@ int Windows_CreateWindow(const char* title, int width, int height)
     return 0;
 }
 
+long long Windows_GetTime()
+{
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+
+    return counter.QuadPart * (LONGLONG)1e9 / frequency.QuadPart;
+}
+
 int DirectX_Initialize()
 {
     IDXGIFactory7* factory = NULL;

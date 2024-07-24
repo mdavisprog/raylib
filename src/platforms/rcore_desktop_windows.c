@@ -330,7 +330,8 @@ void SwapScreenBuffer(void)
 // Get elapsed time measure in seconds since InitTimer()
 double GetTime(void)
 {
-    return 0.0;
+    long long time = Windows_GetTime();
+    return (double)(time - CORE.Time.base) * 1e-9;
 }
 
 // Open URL with default system browser (if available)
