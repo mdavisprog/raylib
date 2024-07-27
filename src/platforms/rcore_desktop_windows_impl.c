@@ -49,7 +49,7 @@
 #include <stdlib.h>
 #include <Windows.h>
 
-#define DXRELEASE(object) object->lpVtbl->Release(object); object = NULL
+#define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
 
 typedef struct
 {
@@ -67,10 +67,14 @@ typedef struct
     ID3D12CommandAllocator* commandAllocator;
     ID3D12GraphicsCommandList1* commandList;
     DescriptorHeap SRV;
+    DescriptorHeap RTV;
+    IDXGISwapChain4* swapChain;
     ID3D12RootSignature* rootSignature;
     ID3D12Fence* fence;
     UINT fenceValue;
     HANDLE fenceEvent;
+    UINT frameIndex;
+    ID3D12Resource* renderTargets[2];
 } PlatformData;
 
 static PlatformData platform = { 0 };
@@ -142,6 +146,22 @@ static BOOL CreateDescriptorHeap(DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYP
     return TRUE;
 }
 
+static BOOL InitializeRenderTarget(UINT index)
+{
+    if (FAILED(platform.swapChain->lpVtbl->GetBuffer(platform.swapChain, index, &IID_ID3D12Resource, (LPVOID*)&platform.renderTargets[index])))
+    {
+        printf("DIRECTX: Failed to retrieve buffer for render target index: %d!\n", index);
+        return FALSE;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE offset = { 0 };
+    platform.RTV.descriptorHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(platform.RTV.descriptorHeap, &offset);
+    offset.ptr += platform.RTV.heapSize;
+    platform.device->lpVtbl->CreateRenderTargetView(platform.device, platform.renderTargets[index], NULL, offset);
+
+    return TRUE;
+}
+
 int Windows_Initialize()
 {
     WNDCLASSEXW class = { 0 };
@@ -195,6 +215,8 @@ int Windows_CreateWindow(const char* title, int width, int height)
         printf("WINDOWS: Failed to create window!\n");
         return -1;
     }
+
+    ShowWindow(platform.handle, SW_SHOW);
 
     return 0;
 }
@@ -401,6 +423,53 @@ int DirectX_Initialize()
         return -1;
     }
 
+    if (!CreateDescriptorHeap(&platform.RTV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
+    {
+        printf("DIRECTX: Failed to create render target descriptors!\n");
+        return -1;
+    }
+
+    IUnknown* unknownCommandQueue = NULL;
+    result = platform.commandQueue->lpVtbl->QueryInterface(platform.commandQueue, &IID_IUnknown, (LPVOID*)&unknownCommandQueue);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to query for IUnknown command queue!\n");
+        return -1;
+    }
+
+    int width, height;
+    Windows_GetWindowSize(&width, &height);
+    DXGI_SWAP_CHAIN_DESC1 swapChainDesc = { 0 };
+    swapChainDesc.BufferCount = 2;
+    swapChainDesc.Width = (UINT)width;
+    swapChainDesc.Height = (UINT)height;
+    swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swapChainDesc.SampleDesc.Count = 1;
+
+    IDXGISwapChain1* swapChain = NULL;
+    result = platform.factory->lpVtbl->CreateSwapChainForHwnd(platform.factory, unknownCommandQueue, platform.handle, &swapChainDesc, NULL, NULL, &swapChain);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create swap chain!\n");
+        return -1;
+    }
+
+    result = platform.factory->lpVtbl->MakeWindowAssociation(platform.factory, platform.handle, DXGI_MWA_NO_ALT_ENTER);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to make window association!\n");
+        return -1;
+    }
+    swapChain->lpVtbl->QueryInterface(swapChain, &IID_IDXGISwapChain4, (LPVOID*)&platform.swapChain);
+    platform.frameIndex = platform.swapChain->lpVtbl->GetCurrentBackBufferIndex(platform.swapChain);
+
+    for (int i = 0; i < 2; i++)
+    {
+        InitializeRenderTarget(i);
+    }
+
     DXGI_ADAPTER_DESC1 desc = { 0 };
     if (FAILED(platform.adapter->lpVtbl->GetDesc1(platform.adapter, &desc)))
     {
@@ -417,8 +486,12 @@ int DirectX_Initialize()
 
 void DirectX_Shutdown()
 {
+    DXRELEASE(platform.renderTargets[0]);
+    DXRELEASE(platform.renderTargets[1]);
+    DXRELEASE(platform.swapChain);
     DXRELEASE(platform.fence);
     DXRELEASE(platform.rootSignature);
+    DXRELEASE(platform.RTV.descriptorHeap);
     DXRELEASE(platform.SRV.descriptorHeap);
     DXRELEASE(platform.commandList);
     DXRELEASE(platform.commandAllocator);
