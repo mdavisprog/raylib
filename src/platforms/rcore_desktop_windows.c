@@ -410,6 +410,8 @@ void PollInputEvents(void)
     }
 
     // TODO: Poll input events for current platform
+    Windows_PollEvents();
+    CORE.Window.shouldClose = Windows_CurrentState()->shouldClose;
 }
 
 

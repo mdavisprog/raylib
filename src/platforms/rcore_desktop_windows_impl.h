@@ -33,11 +33,17 @@
 #ifndef RCORE_DESKTOP_WINDOWS_IMPL_H
 #define RCORE_DESKTOP_WINDOWS_IMPL_H
 
+typedef struct WindowsState {
+    int shouldClose;
+} WindowsState;
+
 int Windows_Initialize();
 void Windows_Close();
 int Windows_CreateWindow(const char* title, int width, int height);
 void Windows_GetWindowSize(int* width, int* height);
 long long Windows_GetTime();
+void Windows_PollEvents();
+WindowsState* Windows_CurrentState();
 
 int DirectX_Initialize();
 void DirectX_Shutdown();

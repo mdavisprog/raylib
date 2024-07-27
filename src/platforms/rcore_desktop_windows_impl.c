@@ -51,14 +51,12 @@
 
 #define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
 
-typedef struct
-{
+typedef struct {
     ID3D12DescriptorHeap* descriptorHeap;
     UINT heapSize;
 } DescriptorHeap;
 
-typedef struct
-{
+typedef struct {
     HWND handle;
     ID3D12Device9* device;
     IDXGIFactory7* factory;
@@ -75,6 +73,7 @@ typedef struct
     HANDLE fenceEvent;
     UINT frameIndex;
     ID3D12Resource* renderTargets[2];
+    WindowsState state;
 } PlatformData;
 
 static PlatformData platform = { 0 };
@@ -91,6 +90,15 @@ static char* ToMultiByte(wchar_t* data)
 
 static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    switch (msg)
+    {
+    case WM_CLOSE: {
+        platform.state.shouldClose = TRUE;
+    } break;
+
+    default: break;
+    }
+
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -264,6 +272,21 @@ long long Windows_GetTime()
     QueryPerformanceCounter(&counter);
 
     return counter.QuadPart * (LONGLONG)1e9 / frequency.QuadPart;
+}
+
+void Windows_PollEvents()
+{
+    MSG msg = { 0 };
+    while (PeekMessageW(&msg, platform.handle, 0, 0, PM_REMOVE))
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+
+WindowsState* Windows_CurrentState()
+{
+    return &platform.state;
 }
 
 int DirectX_Initialize()
