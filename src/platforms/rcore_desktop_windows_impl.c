@@ -53,15 +53,20 @@
 
 typedef struct
 {
+    ID3D12DescriptorHeap* descriptorHeap;
+    UINT heapSize;
+} DescriptorHeap;
+
+typedef struct
+{
     HWND handle;
     ID3D12Device9* device;
     IDXGIFactory7* factory;
     IDXGIAdapter1* adapter;
     ID3D12CommandQueue* commandQueue;
     ID3D12CommandAllocator* commandAllocator;
-    ID3D12DescriptorHeap* descriptorHeapSRV;
-    UINT descriptorHeapSize;
     ID3D12GraphicsCommandList1* commandList;
+    DescriptorHeap SRV;
     ID3D12RootSignature* rootSignature;
     ID3D12Fence* fence;
     UINT fenceValue;
@@ -119,6 +124,21 @@ static BOOL IsValidAdapter(IDXGIAdapter1* adapter)
         return FALSE;
     }
 
+    return TRUE;
+}
+
+static BOOL CreateDescriptorHeap(DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS flags)
+{
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { 0 };
+    heapDesc.Type = type;
+    heapDesc.NumDescriptors = numDescriptors;
+    heapDesc.Flags = flags;
+    if (FAILED(platform.device->lpVtbl->CreateDescriptorHeap(platform.device, &heapDesc, &IID_ID3D12DescriptorHeap, (LPVOID*)&heap->descriptorHeap)))
+    {
+        return FALSE;
+    }
+
+    heap->heapSize = platform.device->lpVtbl->GetDescriptorHandleIncrementSize(platform.device, type);
     return TRUE;
 }
 
@@ -287,18 +307,11 @@ int DirectX_Initialize()
         return -1;
     }
 
-    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { 0 };
-    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = 100;
-    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    result = platform.device->lpVtbl->CreateDescriptorHeap(platform.device, &heapDesc, &IID_ID3D12DescriptorHeap, (LPVOID*)&platform.descriptorHeapSRV);
-    if (FAILED(result))
+    if (!CreateDescriptorHeap(&platform.SRV, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 100, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
     {
-        printf("DIRECTX: Failed to create descriptor heap!\n");
+        printf("DIRECTX: Failed to create SRV descriptor heap!\n");
         return -1;
     }
-
-    platform.descriptorHeapSize = platform.device->lpVtbl->GetDescriptorHandleIncrementSize(platform.device, heapDesc.Type);
 
     D3D12_FEATURE_DATA_ROOT_SIGNATURE Feature = { D3D_ROOT_SIGNATURE_VERSION_1_1 };
     result = platform.device->lpVtbl->CheckFeatureSupport(platform.device, D3D12_FEATURE_ROOT_SIGNATURE, &Feature, sizeof(Feature));
@@ -406,7 +419,7 @@ void DirectX_Shutdown()
 {
     DXRELEASE(platform.fence);
     DXRELEASE(platform.rootSignature);
-    DXRELEASE(platform.descriptorHeapSRV);
+    DXRELEASE(platform.SRV.descriptorHeap);
     DXRELEASE(platform.commandList);
     DXRELEASE(platform.commandAllocator);
     DXRELEASE(platform.commandQueue);
