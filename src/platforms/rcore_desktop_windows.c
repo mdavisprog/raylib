@@ -320,7 +320,7 @@ void DisableCursor(void)
 // Swap back buffer with front buffer (screen drawing)
 void SwapScreenBuffer(void)
 {
-    TraceLog(LOG_ERROR, "SwapScreenBuffer() not implemented on target platform");
+    DirectX_Present();
 }
 
 //----------------------------------------------------------------------------------

@@ -71,7 +71,7 @@ typedef struct
     IDXGISwapChain4* swapChain;
     ID3D12RootSignature* rootSignature;
     ID3D12Fence* fence;
-    UINT fenceValue;
+    UINT64 fenceValue;
     HANDLE fenceEvent;
     UINT frameIndex;
     ID3D12Resource* renderTargets[2];
@@ -160,6 +160,24 @@ static BOOL InitializeRenderTarget(UINT index)
     platform.device->lpVtbl->CreateRenderTargetView(platform.device, platform.renderTargets[index], NULL, offset);
 
     return TRUE;
+}
+
+static void WaitForPreviousFrame()
+{
+    const UINT64 fenceValue = platform.fenceValue;
+    if (FAILED(platform.commandQueue->lpVtbl->Signal(platform.commandQueue, platform.fence, fenceValue)))
+    {
+        return;
+    }
+    platform.fenceValue += 1;
+
+    if (platform.fence->lpVtbl->GetCompletedValue(platform.fence) < fenceValue)
+    {
+        if (SUCCEEDED(platform.fence->lpVtbl->SetEventOnCompletion(platform.fence, fenceValue, platform.fenceEvent)))
+        {
+            WaitForSingleObject(platform.fenceEvent, INFINITE);
+        }
+    }
 }
 
 int Windows_Initialize()
@@ -499,4 +517,15 @@ void DirectX_Shutdown()
     DXRELEASE(platform.adapter);
     DXRELEASE(platform.factory);
     DXRELEASE(platform.device);
+}
+
+void DirectX_Present()
+{
+    if (FAILED(platform.swapChain->lpVtbl->Present(platform.swapChain, 1, 0)))
+    {
+        printf("DIRECTX: Failed to present!\n");
+    }
+
+    WaitForPreviousFrame();
+    platform.frameIndex = platform.swapChain->lpVtbl->GetCurrentBackBufferIndex(platform.swapChain);
 }

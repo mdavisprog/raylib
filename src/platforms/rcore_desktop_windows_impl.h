@@ -41,5 +41,6 @@ long long Windows_GetTime();
 
 int DirectX_Initialize();
 void DirectX_Shutdown();
+void DirectX_Present();
 
 #endif // RCORE_DESKTOP_WINDOWS_IMPL_H
