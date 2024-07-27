@@ -59,9 +59,9 @@ typedef struct
     IDXGIAdapter1* adapter;
     ID3D12CommandQueue* commandQueue;
     ID3D12CommandAllocator* commandAllocator;
-    ID3D12CommandList* commandList;
     ID3D12DescriptorHeap* descriptorHeapSRV;
     UINT descriptorHeapSize;
+    ID3D12GraphicsCommandList1* commandList;
     ID3D12RootSignature* rootSignature;
     ID3D12Fence* fence;
     UINT fenceValue;
@@ -280,7 +280,7 @@ int DirectX_Initialize()
         return -1;
     }
 
-    result = platform.device->lpVtbl->CreateCommandList(platform.device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, platform.commandAllocator, NULL, &IID_ID3D12CommandList, (LPVOID*)&platform.commandList);
+    result = platform.device->lpVtbl->CreateCommandList(platform.device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, platform.commandAllocator, NULL, &IID_ID3D12GraphicsCommandList1, (LPVOID*)&platform.commandList);
     if (FAILED(result))
     {
         printf("DIRECTX: Failed to create command list!\n");
