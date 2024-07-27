@@ -179,6 +179,22 @@ int Windows_CreateWindow(const char* title, int width, int height)
     return 0;
 }
 
+void Windows_GetWindowSize(int* width, int* height)
+{
+    RECT bounds = { 0 };
+    GetWindowRect(platform.handle, &bounds);
+
+    if (width != NULL)
+    {
+        *width = bounds.right - bounds.left;
+    }
+
+    if (height != NULL)
+    {
+        *height = bounds.bottom - bounds.top;
+    }
+}
+
 long long Windows_GetTime()
 {
     LARGE_INTEGER frequency;

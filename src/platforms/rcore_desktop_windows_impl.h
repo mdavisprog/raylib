@@ -36,6 +36,7 @@
 int Windows_Initialize();
 void Windows_Close();
 int Windows_CreateWindow(const char* title, int width, int height);
+void Windows_GetWindowSize(int* width, int* height);
 long long Windows_GetTime();
 
 int DirectX_Initialize();
