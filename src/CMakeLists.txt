@@ -41,6 +41,7 @@ set(raylib_sources
 if(WITH_DIRECTX)
     set(raylib_sources
         ${raylib_sources}
+        rldx.c
         platforms/rcore_desktop_windows_impl.c
         )
 endif()
