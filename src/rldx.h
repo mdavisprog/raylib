@@ -273,4 +273,7 @@ RLAPI void rlSetMatrixViewOffsetStereo(Matrix right, Matrix left);        // Set
 RLAPI void rlLoadDrawCube(void);     // Load and draw a cube
 RLAPI void rlLoadDrawQuad(void);     // Load and draw a quad
 
+// Used from SwapScreenBuffers
+void rlPresent();
+
 #endif // RLDX_H

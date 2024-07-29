@@ -47,6 +47,7 @@
 **********************************************************************************************/
 
 #include "rcore_desktop_windows_impl.h"
+#include "../rldx.h"
 
 //----------------------------------------------------------------------------------
 // Types and Structures Definition
@@ -192,8 +193,7 @@ void SetWindowFocused(void)
 // Get native window handle
 void *GetWindowHandle(void)
 {
-    TRACELOG(LOG_WARNING, "GetWindowHandle() not implemented on target platform");
-    return NULL;
+    return Windows_GetWindowHandle();
 }
 
 // Get number of monitors
@@ -320,7 +320,7 @@ void DisableCursor(void)
 // Swap back buffer with front buffer (screen drawing)
 void SwapScreenBuffer(void)
 {
-    DirectX_Present();
+    rlPresent();
 }
 
 //----------------------------------------------------------------------------------
@@ -440,15 +440,6 @@ int InitPlatform(void)
         return -1;
     }
 
-    int Result = DirectX_Initialize();
-    if (Result != 0)
-    {
-        TRACELOG(LOG_ERROR, "DIRECTX: Failed to initialize!");
-        return -1;
-    }
-
-    TRACELOG(LOG_INFO, "DIRECTX: Initialized!");
-
     // If everything work as expected, we can continue
     CORE.Window.ready = true;
     CORE.Window.render.width = CORE.Window.screen.width;
@@ -488,7 +479,6 @@ int InitPlatform(void)
 // Close platform
 void ClosePlatform(void)
 {
-    DirectX_Shutdown();
     Windows_Close();
 }
 

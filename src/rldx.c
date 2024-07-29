@@ -32,8 +32,387 @@
 **********************************************************************************************/
 
 #include "rldx.h"
+#include "platforms/rcore_desktop_windows_impl.h"
 
+#include <d3d12.h>
+#include <dxgi1_6.h>
 #include <stdio.h>
+
+//----------------------------------------------------------------------------------
+// Defines and Macros
+//----------------------------------------------------------------------------------
+
+#define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
+
+//----------------------------------------------------------------------------------
+// Types
+//----------------------------------------------------------------------------------
+
+typedef struct {
+    ID3D12DescriptorHeap* descriptorHeap;
+    UINT heapSize;
+} DescriptorHeap;
+
+typedef struct {
+    ID3D12Device9 *device;
+    IDXGIFactory7 *factory;
+    IDXGIAdapter1 *adapter;
+    ID3D12CommandQueue *commandQueue;
+    ID3D12CommandAllocator *commandAllocator;
+    ID3D12GraphicsCommandList1 *commandList;
+    DescriptorHeap SRV;
+    DescriptorHeap RTV;
+    IDXGISwapChain4 *swapChain;
+    ID3D12RootSignature *rootSignature;
+    ID3D12Fence *fence;
+    UINT64 fenceValue;
+    HANDLE fenceEvent;
+    UINT frameIndex;
+    ID3D12Resource *renderTargets[2];
+} DriverData;
+
+//----------------------------------------------------------------------------------
+// Variables
+//----------------------------------------------------------------------------------
+
+static DriverData driver = { 0 };
+
+//----------------------------------------------------------------------------------
+// External functions
+//----------------------------------------------------------------------------------
+
+extern void *GetWindowHandle(void);
+
+//----------------------------------------------------------------------------------
+// Utility functions
+//----------------------------------------------------------------------------------
+
+static bool EnumAdapter(UINT index, IDXGIFactory7* factory, IDXGIAdapter1** adapter)
+{
+    HRESULT result = factory->lpVtbl->EnumAdapterByGpuPreference(factory, index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, &IID_IDXGIAdapter1, (LPVOID*)&(*adapter));
+    return SUCCEEDED(result);
+}
+
+static bool IsValidAdapter(IDXGIAdapter1* adapter)
+{
+    DXGI_ADAPTER_DESC1 desc = { 0 };
+    HRESULT result = adapter->lpVtbl->GetDesc1(adapter, &desc);
+
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to retrieve description for adaptar!\n");
+        return false;
+    }
+
+    if (desc.Flags & DXGI_ADAPTER_FLAG3_SOFTWARE)
+    {
+        return false;
+    }
+
+    IUnknown* unknownAdapter = NULL;
+    if (FAILED(adapter->lpVtbl->QueryInterface(adapter, &IID_IUnknown, (LPVOID*)&unknownAdapter)))
+    {
+        return false;
+    }
+
+    result = D3D12CreateDevice(unknownAdapter, D3D_FEATURE_LEVEL_12_0, &IID_ID3D12Device9, NULL);
+    if (FAILED(result))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static bool CreateDescriptorHeap(DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS flags)
+{
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { 0 };
+    heapDesc.Type = type;
+    heapDesc.NumDescriptors = numDescriptors;
+    heapDesc.Flags = flags;
+    if (FAILED(driver.device->lpVtbl->CreateDescriptorHeap(driver.device, &heapDesc, &IID_ID3D12DescriptorHeap, (LPVOID*)&heap->descriptorHeap)))
+    {
+        return false;
+    }
+
+    heap->heapSize = driver.device->lpVtbl->GetDescriptorHandleIncrementSize(driver.device, type);
+    return true;
+}
+
+static bool InitializeDevice()
+{
+    IDXGIFactory7* factory = NULL;
+    HRESULT result = CreateDXGIFactory2(0, &IID_IDXGIFactory7, (LPVOID*)&factory);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create DXGI Factory!\n");
+        return false;
+    }
+
+    IDXGIFactory7* queryFactory = NULL;
+    result = factory->lpVtbl->QueryInterface(factory, &IID_IDXGIFactory7, (LPVOID*)&queryFactory);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to query factory interface!\n");
+        return false;
+    }
+
+    IDXGIAdapter1* adapter = NULL;
+    for (UINT index = 0; EnumAdapter(index, queryFactory, &adapter); index++)
+    {
+        if (IsValidAdapter(adapter))
+        {
+            break;
+        }
+    }
+
+    if (adapter == NULL)
+    {
+        for (UINT index = 0; SUCCEEDED(factory->lpVtbl->EnumAdapters1(factory, index, &adapter)); index++)
+        {
+            if (IsValidAdapter(adapter))
+            {
+                break;
+            }
+        }
+    }
+
+    queryFactory->lpVtbl->Release(queryFactory);
+    driver.factory = factory;
+    driver.adapter = adapter;
+
+    IUnknown* unknownAdapter = NULL;
+    if (FAILED(adapter->lpVtbl->QueryInterface(adapter, &IID_IUnknown, (LPVOID*)&unknownAdapter)))
+    {
+        printf("DIRECTX: Failed to query IUnknown for IDXGIAdapter!\n");
+        return false;
+    }
+
+    result = D3D12CreateDevice(unknownAdapter, D3D_FEATURE_LEVEL_12_0, &IID_ID3D12Device9, (LPVOID*)&driver.device);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create device!\n");
+        return false;
+    }
+
+    return true;
+}
+
+static bool InitializeCommands()
+{
+    D3D12_COMMAND_QUEUE_DESC commandQueueDesc = { 0 };
+    commandQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    commandQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    HRESULT result = driver.device->lpVtbl->CreateCommandQueue(driver.device, &commandQueueDesc, &IID_ID3D12CommandQueue, (LPVOID*)&driver.commandQueue);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create command queue!\n");
+        return false;
+    }
+
+    result = driver.device->lpVtbl->CreateCommandAllocator(driver.device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (LPVOID*)&driver.commandAllocator);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create command allocator!\n");
+        return false;
+    }
+
+    result = driver.device->lpVtbl->CreateCommandList(driver.device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, driver.commandAllocator, NULL, &IID_ID3D12GraphicsCommandList1, (LPVOID*)&driver.commandList);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create command list!\n");
+        return false;
+    }
+
+    return true;
+}
+
+static bool InitializeRootSignature()
+{
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE feature = { D3D_ROOT_SIGNATURE_VERSION_1_1 };
+    HRESULT result = driver.device->lpVtbl->CheckFeatureSupport(driver.device, D3D12_FEATURE_ROOT_SIGNATURE, &feature, sizeof(feature));
+    if (FAILED(result))
+    {
+        feature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_DESCRIPTOR_RANGE1 descriptorRanges[2];
+    descriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    descriptorRanges[0].NumDescriptors = 1;
+    descriptorRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    descriptorRanges[0].BaseShaderRegister = 0;
+    descriptorRanges[0].RegisterSpace = 0;
+    descriptorRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    descriptorRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    descriptorRanges[1].NumDescriptors = 1;
+    descriptorRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    descriptorRanges[1].BaseShaderRegister = 0;
+    descriptorRanges[1].RegisterSpace = 0;
+    descriptorRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER1 parameters[2];
+    parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    parameters[0].DescriptorTable.NumDescriptorRanges = 1;
+    parameters[0].DescriptorTable.pDescriptorRanges = &descriptorRanges[0];
+
+    parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+    parameters[1].DescriptorTable.pDescriptorRanges = &descriptorRanges[1];
+
+    D3D12_STATIC_SAMPLER_DESC sampler = { 0 };
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    sampler.MipLODBias = 0.0f;
+    sampler.MaxAnisotropy = 0;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc = { 0 };
+    rootSignatureDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    rootSignatureDesc.Desc_1_1.NumParameters = _countof(parameters);
+    rootSignatureDesc.Desc_1_1.pParameters = parameters;
+    rootSignatureDesc.Desc_1_1.NumStaticSamplers = 1;
+    rootSignatureDesc.Desc_1_1.pStaticSamplers = &sampler;
+    rootSignatureDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob* signature = NULL;
+    ID3DBlob* error = NULL;
+    result = D3D12SerializeVersionedRootSignature(&rootSignatureDesc, &signature, &error);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to serialize versioned root signature! Error: %s\n", (LPCSTR)error->lpVtbl->GetBufferPointer(error));
+        return false;
+    }
+
+    result = driver.device->lpVtbl->CreateRootSignature(driver.device, 0, signature->lpVtbl->GetBufferPointer(signature),
+        signature->lpVtbl->GetBufferSize(signature), &IID_ID3D12RootSignature, (LPVOID*)&driver.rootSignature);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create root signature!\n");
+        return false;
+    }
+
+    return true;
+}
+
+static bool InitializeFence()
+{
+    HRESULT result = driver.device->lpVtbl->CreateFence(driver.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (LPVOID*)&driver.fence);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create fence!\n");
+        return false;
+    }
+    driver.fenceValue = 0;
+
+    driver.fenceEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (driver.fenceEvent == NULL)
+    {
+        printf("DIRECTX: Failed to create fence event!\n");
+        return false;
+    }
+
+    return true;
+}
+
+static bool InitializeRenderTarget(UINT index)
+{
+    if (FAILED(driver.swapChain->lpVtbl->GetBuffer(driver.swapChain, index, &IID_ID3D12Resource, (LPVOID*)&driver.renderTargets[index])))
+    {
+        printf("DIRECTX: Failed to retrieve buffer for render target index: %d!\n", index);
+        return false;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE offset = { 0 };
+    driver.RTV.descriptorHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(driver.RTV.descriptorHeap, &offset);
+    offset.ptr += driver.RTV.heapSize;
+    driver.device->lpVtbl->CreateRenderTargetView(driver.device, driver.renderTargets[index], NULL, offset);
+
+    return TRUE;
+}
+
+static bool InitializeSwapChain(UINT width, UINT height)
+{
+    if (!CreateDescriptorHeap(&driver.RTV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
+    {
+        printf("DIRECTX: Failed to create render target descriptors!\n");
+        return false;
+    }
+
+    IUnknown* unknownCommandQueue = NULL;
+    HRESULT result = driver.commandQueue->lpVtbl->QueryInterface(driver.commandQueue, &IID_IUnknown, (LPVOID*)&unknownCommandQueue);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to query for IUnknown command queue!\n");
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 swapChainDesc = { 0 };
+    swapChainDesc.BufferCount = 2;
+    swapChainDesc.Width = width;
+    swapChainDesc.Height = height;
+    swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swapChainDesc.SampleDesc.Count = 1;
+
+    HANDLE handle = (HANDLE)GetWindowHandle();
+    IDXGISwapChain1* swapChain = NULL;
+    result = driver.factory->lpVtbl->CreateSwapChainForHwnd(driver.factory, unknownCommandQueue, handle, &swapChainDesc, NULL, NULL, &swapChain);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create swap chain!\n");
+        return false;
+    }
+
+    result = driver.factory->lpVtbl->MakeWindowAssociation(driver.factory, handle, DXGI_MWA_NO_ALT_ENTER);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to make window association!\n");
+        return false;
+    }
+    swapChain->lpVtbl->QueryInterface(swapChain, &IID_IDXGISwapChain4, (LPVOID*)&driver.swapChain);
+    driver.frameIndex = driver.swapChain->lpVtbl->GetCurrentBackBufferIndex(driver.swapChain);
+
+    for (int i = 0; i < 2; i++)
+    {
+        InitializeRenderTarget(i);
+    }
+
+    return true;
+}
+
+static void WaitForPreviousFrame()
+{
+    const UINT64 fenceValue = driver.fenceValue;
+    if (FAILED(driver.commandQueue->lpVtbl->Signal(driver.commandQueue, driver.fence, fenceValue)))
+    {
+        return;
+    }
+    driver.fenceValue += 1;
+
+    if (driver.fence->lpVtbl->GetCompletedValue(driver.fence) < fenceValue)
+    {
+        if (SUCCEEDED(driver.fence->lpVtbl->SetEventOnCompletion(driver.fence, fenceValue, driver.fenceEvent)))
+        {
+            WaitForSingleObject(driver.fenceEvent, INFINITE);
+        }
+    }
+}
+
+//----------------------------------------------------------------------------------
+// API
+//----------------------------------------------------------------------------------
 
 void rlMatrixMode(int mode) {}
 void rlPushMatrix(void) {}
@@ -134,8 +513,70 @@ void rlSetBlendFactors(int glSrcFactor, int glDstFactor, int glEquation) {}
 void rlSetBlendFactorsSeparate(int glSrcRGB, int glDstRGB, int glSrcAlpha, int glDstAlpha, int glEqRGB, int glEqAlpha) {}
 
 
-void rlglInit(int width, int height) {}
-void rlglClose(void) {}
+void rlglInit(int width, int height)
+{
+    if (!InitializeDevice())
+    {
+        return;
+    }
+
+    if (!InitializeCommands())
+    {
+        return;
+    }
+
+    if (!CreateDescriptorHeap(&driver.SRV, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 100, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
+    {
+        printf("DIRECTX: Failed to create SRV descriptor heap!\n");
+        return;
+    }
+
+    if (!InitializeRootSignature())
+    {
+        return;
+    }
+
+    if (!InitializeFence())
+    {
+        return;
+    }
+
+    if (!InitializeSwapChain(width, height))
+    {
+        return;
+    }
+
+    DXGI_ADAPTER_DESC1 desc = { 0 };
+    if (FAILED(driver.adapter->lpVtbl->GetDesc1(driver.adapter, &desc)))
+    {
+        printf("DIRECTX: Failed to retrieve adapter description!\n");
+        return;
+    }
+
+    printf("DIRECTX: Initialized DirectX!\n");
+
+    char* driverName = Windows_ToMultiByte(desc.Description);
+    printf("DIRECTX: Driver is %s.\n", driverName);
+    free(driverName);
+}
+
+void rlglClose(void)
+{
+    DXRELEASE(driver.renderTargets[0]);
+    DXRELEASE(driver.renderTargets[1]);
+    DXRELEASE(driver.swapChain);
+    DXRELEASE(driver.fence);
+    DXRELEASE(driver.rootSignature);
+    DXRELEASE(driver.RTV.descriptorHeap);
+    DXRELEASE(driver.SRV.descriptorHeap);
+    DXRELEASE(driver.commandList);
+    DXRELEASE(driver.commandAllocator);
+    DXRELEASE(driver.commandQueue);
+    DXRELEASE(driver.adapter);
+    DXRELEASE(driver.factory);
+    DXRELEASE(driver.device);
+}
+
 void rlLoadExtensions(void *loader) {}
 int rlGetVersion(void) { return 0; }
 void rlSetFramebufferWidth(int width) {}
@@ -233,3 +674,14 @@ void rlSetMatrixViewOffsetStereo(Matrix right, Matrix left) {}
 // Quick and dirty cube/quad buffers load->draw->unload
 void rlLoadDrawCube(void) {}
 void rlLoadDrawQuad(void) {}
+
+void rlPresent()
+{
+    if (FAILED(driver.swapChain->lpVtbl->Present(driver.swapChain, 1, 0)))
+    {
+        printf("DIRECTX: Failed to present!\n");
+    }
+
+    WaitForPreviousFrame();
+    driver.frameIndex = driver.swapChain->lpVtbl->GetCurrentBackBufferIndex(driver.swapChain);
+}
