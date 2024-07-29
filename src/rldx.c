@@ -325,6 +325,14 @@ static bool InitializeFence()
     return true;
 }
 
+static D3D12_CPU_DESCRIPTOR_HANDLE CPUOffset(DescriptorHeap* heap, UINT index)
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE result = { 0 };
+    heap->descriptorHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap->descriptorHeap, &result);
+    result.ptr += index * heap->heapSize;
+    return result;
+}
+
 static bool InitializeRenderTarget(UINT index)
 {
     if (FAILED(driver.swapChain->lpVtbl->GetBuffer(driver.swapChain, index, &IID_ID3D12Resource, (LPVOID*)&driver.renderTargets[index])))
@@ -333,9 +341,7 @@ static bool InitializeRenderTarget(UINT index)
         return false;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE offset = { 0 };
-    driver.RTV.descriptorHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(driver.RTV.descriptorHeap, &offset);
-    offset.ptr += driver.RTV.heapSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE offset = CPUOffset(&driver.RTV, index);
     driver.device->lpVtbl->CreateRenderTargetView(driver.device, driver.renderTargets[index], NULL, offset);
 
     return TRUE;
