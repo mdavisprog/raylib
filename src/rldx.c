@@ -416,6 +416,37 @@ static void WaitForPreviousFrame()
     }
 }
 
+static bool ExecuteCommands()
+{
+    if (FAILED(driver.commandList->lpVtbl->Close(driver.commandList)))
+    {
+        return false;
+    }
+
+    ID3D12CommandList* commandList = NULL;
+    driver.commandList->lpVtbl->QueryInterface(driver.commandList, &IID_ID3D12CommandList, (LPVOID*)&commandList);
+
+    ID3D12CommandList* commands[] = { commandList };
+    driver.commandQueue->lpVtbl->ExecuteCommandLists(driver.commandQueue, _countof(commands), commands);
+
+    return true;
+}
+
+static bool ResetCommands()
+{
+    if (FAILED(driver.commandAllocator->lpVtbl->Reset(driver.commandAllocator)))
+    {
+        return false;
+    }
+
+    if (FAILED(driver.commandList->lpVtbl->Reset(driver.commandList, driver.commandAllocator, NULL)))
+    {
+        return false;
+    }
+
+    return true;
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
@@ -511,7 +542,13 @@ void rlEnableStereoRender(void) {}
 void rlDisableStereoRender(void) {}
 bool rlIsStereoRenderEnabled(void) { return false; }
 
-void rlClearColor(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {}
+void rlClearColor(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
+{
+    float color[4] = { (float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f, (float)a / 255.0f };
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = CPUOffset(&driver.rtv, driver.frameIndex);
+    driver.commandList->lpVtbl->ClearRenderTargetView(driver.commandList, rtv, color, 0, NULL);
+}
+
 void rlClearScreenBuffers(void) {}
 void rlCheckErrors(void) {}
 void rlSetBlendMode(int mode) {}
@@ -599,7 +636,12 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements) { rlRenderBa
 void rlUnloadRenderBatch(rlRenderBatch batch) {}
 void rlDrawRenderBatch(rlRenderBatch *batch) {}
 void rlSetRenderBatchActive(rlRenderBatch *batch) {}
-void rlDrawRenderBatchActive(void) {}
+
+void rlDrawRenderBatchActive(void)
+{
+    ExecuteCommands();
+}
+
 bool rlCheckRenderBatchLimit(int vCount) { return false; }
 
 void rlSetTexture(unsigned int id) {}
@@ -687,6 +729,8 @@ void rlPresent()
     {
         printf("DIRECTX: Failed to present!\n");
     }
+
+    ResetCommands();
 
     WaitForPreviousFrame();
     driver.frameIndex = driver.swapChain->lpVtbl->GetCurrentBackBufferIndex(driver.swapChain);
