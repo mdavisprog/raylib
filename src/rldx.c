@@ -447,6 +447,21 @@ static bool ResetCommands()
     return true;
 }
 
+static void UpdateRenderTarget()
+{
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.pResource = driver.renderTargets[driver.frameIndex];
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CPUOffset(&driver.rtv, driver.frameIndex);
+    driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, NULL);
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
@@ -601,6 +616,8 @@ void rlglInit(int width, int height)
     char* driverName = Windows_ToMultiByte(desc.Description);
     printf("DIRECTX: Driver is %s.\n", driverName);
     free(driverName);
+
+    UpdateRenderTarget();
 }
 
 void rlglClose(void)
@@ -734,4 +751,7 @@ void rlPresent()
 
     WaitForPreviousFrame();
     driver.frameIndex = driver.swapChain->lpVtbl->GetCurrentBackBufferIndex(driver.swapChain);
+
+    // Prepare render target for next frame
+    UpdateRenderTarget();
 }
