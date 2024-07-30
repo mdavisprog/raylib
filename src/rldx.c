@@ -60,8 +60,8 @@ typedef struct {
     ID3D12CommandQueue *commandQueue;
     ID3D12CommandAllocator *commandAllocator;
     ID3D12GraphicsCommandList1 *commandList;
-    DescriptorHeap SRV;
-    DescriptorHeap RTV;
+    DescriptorHeap srv;
+    DescriptorHeap rtv;
     IDXGISwapChain4 *swapChain;
     ID3D12RootSignature *rootSignature;
     ID3D12Fence *fence;
@@ -341,7 +341,7 @@ static bool InitializeRenderTarget(UINT index)
         return false;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE offset = CPUOffset(&driver.RTV, index);
+    D3D12_CPU_DESCRIPTOR_HANDLE offset = CPUOffset(&driver.rtv, index);
     driver.device->lpVtbl->CreateRenderTargetView(driver.device, driver.renderTargets[index], NULL, offset);
 
     return TRUE;
@@ -349,7 +349,7 @@ static bool InitializeRenderTarget(UINT index)
 
 static bool InitializeSwapChain(UINT width, UINT height)
 {
-    if (!CreateDescriptorHeap(&driver.RTV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
+    if (!CreateDescriptorHeap(&driver.rtv, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
     {
         printf("DIRECTX: Failed to create render target descriptors!\n");
         return false;
@@ -531,7 +531,7 @@ void rlglInit(int width, int height)
         return;
     }
 
-    if (!CreateDescriptorHeap(&driver.SRV, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 100, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
+    if (!CreateDescriptorHeap(&driver.srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 100, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
     {
         printf("DIRECTX: Failed to create SRV descriptor heap!\n");
         return;
@@ -573,8 +573,8 @@ void rlglClose(void)
     DXRELEASE(driver.swapChain);
     DXRELEASE(driver.fence);
     DXRELEASE(driver.rootSignature);
-    DXRELEASE(driver.RTV.descriptorHeap);
-    DXRELEASE(driver.SRV.descriptorHeap);
+    DXRELEASE(driver.rtv.descriptorHeap);
+    DXRELEASE(driver.srv.descriptorHeap);
     DXRELEASE(driver.commandList);
     DXRELEASE(driver.commandAllocator);
     DXRELEASE(driver.commandQueue);
