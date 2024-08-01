@@ -44,6 +44,8 @@
 
 #define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
 
+#define NUM_DESCRIPTORS 100
+
 //----------------------------------------------------------------------------------
 // Types
 //----------------------------------------------------------------------------------
@@ -69,12 +71,21 @@ typedef struct {
     HANDLE fenceEvent;
     UINT frameIndex;
     ID3D12Resource *renderTargets[2];
+    ID3D12Resource *constantBuffer;
+    unsigned char *constantBufferPtr;
 } DriverData;
+
+// Constant buffers need to be 256 byte aligned
+typedef struct {
+    Matrix mpv;
+    char dummy[192];
+} ConstantBuffer;
 
 //----------------------------------------------------------------------------------
 // Variables
 //----------------------------------------------------------------------------------
 
+static const int constantBufferIndex = NUM_DESCRIPTORS - 1;
 static DriverData driver = { 0 };
 
 //----------------------------------------------------------------------------------
@@ -325,10 +336,18 @@ static bool InitializeFence()
     return true;
 }
 
-static D3D12_CPU_DESCRIPTOR_HANDLE CPUOffset(DescriptorHeap* heap, UINT index)
+static D3D12_CPU_DESCRIPTOR_HANDLE CPUOffset(DescriptorHeap *heap, UINT index)
 {
     D3D12_CPU_DESCRIPTOR_HANDLE result = { 0 };
     heap->descriptorHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap->descriptorHeap, &result);
+    result.ptr += index * heap->heapSize;
+    return result;
+}
+
+static D3D12_GPU_DESCRIPTOR_HANDLE GPUOffset(DescriptorHeap *heap, UINT index)
+{
+    D3D12_GPU_DESCRIPTOR_HANDLE result = { 0 };
+    heap->descriptorHeap->lpVtbl->GetGPUDescriptorHandleForHeapStart(heap->descriptorHeap, &result);
     result.ptr += index * heap->heapSize;
     return result;
 }
@@ -393,6 +412,54 @@ static bool InitializeSwapChain(UINT width, UINT height)
     for (int i = 0; i < 2; i++)
     {
         InitializeRenderTarget(i);
+    }
+
+    return true;
+}
+
+static bool InitializeConstantBuffer()
+{
+    D3D12_HEAP_PROPERTIES properties = { 0 };
+    properties.Type = D3D12_HEAP_TYPE_UPLOAD;
+    properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    properties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    properties.CreationNodeMask = 1;
+    properties.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC description = { 0 };
+    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    description.Alignment = 0;
+    description.Width = sizeof(ConstantBuffer);
+    description.Height = 1;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = DXGI_FORMAT_UNKNOWN;
+    description.SampleDesc.Count = 1;
+    description.SampleDesc.Quality = 0;
+    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    description.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &properties,
+        D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&driver.constantBuffer);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create constant buffer resource!\n");
+        return false;
+    }
+
+    D3D12_CONSTANT_BUFFER_VIEW_DESC view = { 0 };
+    view.BufferLocation = driver.constantBuffer->lpVtbl->GetGPUVirtualAddress(driver.constantBuffer);
+    view.SizeInBytes = (UINT)description.Width;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = CPUOffset(&driver.srv, constantBufferIndex);
+    driver.device->lpVtbl->CreateConstantBufferView(driver.device, &view, handle);
+
+    D3D12_RANGE range = { 0 };
+    result = driver.constantBuffer->lpVtbl->Map(driver.constantBuffer, 0, &range, (LPVOID*)&driver.constantBufferPtr);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to map constant buffer memory!\n");
+        return false;
     }
 
     return true;
@@ -583,7 +650,7 @@ void rlglInit(int width, int height)
         return;
     }
 
-    if (!CreateDescriptorHeap(&driver.srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 100, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
+    if (!CreateDescriptorHeap(&driver.srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, NUM_DESCRIPTORS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
     {
         printf("DIRECTX: Failed to create SRV descriptor heap!\n");
         return;
@@ -600,6 +667,11 @@ void rlglInit(int width, int height)
     }
 
     if (!InitializeSwapChain(width, height))
+    {
+        return;
+    }
+
+    if (!InitializeConstantBuffer())
     {
         return;
     }
@@ -622,6 +694,7 @@ void rlglInit(int width, int height)
 
 void rlglClose(void)
 {
+    DXRELEASE(driver.constantBuffer);
     DXRELEASE(driver.renderTargets[0]);
     DXRELEASE(driver.renderTargets[1]);
     DXRELEASE(driver.swapChain);
@@ -656,6 +729,12 @@ void rlSetRenderBatchActive(rlRenderBatch *batch) {}
 
 void rlDrawRenderBatchActive(void)
 {
+    // TODO: Enable when graphics pipeline states are implemented.
+    // D3D12_GPU_DESCRIPTOR_HANDLE constantBufferOffset = GPUOffset(&driver.srv, constantBufferIndex);
+    // driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, constantBufferOffset);
+
+    driver.commandList->lpVtbl->IASetPrimitiveTopology(driver.commandList, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
     ExecuteCommands();
 }
 
