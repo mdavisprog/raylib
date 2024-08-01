@@ -42,6 +42,10 @@
 // Defines and Macros
 //----------------------------------------------------------------------------------
 
+#ifndef DIRECTX_INFOQUEUE
+#define DIRECTX_INFOQUEUE
+#endif
+
 #define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
 
 #define NUM_DESCRIPTORS 100
@@ -73,6 +77,9 @@ typedef struct {
     ID3D12Resource *renderTargets[2];
     ID3D12Resource *constantBuffer;
     unsigned char *constantBufferPtr;
+#if defined(DIRECTX_INFOQUEUE)
+    ID3D12InfoQueue* infoQueue;
+#endif
 } DriverData;
 
 // Constant buffers need to be 256 byte aligned
@@ -152,8 +159,18 @@ static bool CreateDescriptorHeap(DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYP
 
 static bool InitializeDevice()
 {
+    UINT factoryFlags = 0;
+#if defined(DIRECTX_INFOQUEUE)
+    ID3D12Debug *debug = NULL;
+    if (SUCCEEDED(D3D12GetDebugInterface(&IID_ID3D12Debug, (LPVOID*)&debug)))
+    {
+        debug->lpVtbl->EnableDebugLayer(debug);
+        factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+    }
+#endif
+
     IDXGIFactory7* factory = NULL;
-    HRESULT result = CreateDXGIFactory2(0, &IID_IDXGIFactory7, (LPVOID*)&factory);
+    HRESULT result = CreateDXGIFactory2(factoryFlags, &IID_IDXGIFactory7, (LPVOID*)&factory);
     if (FAILED(result))
     {
         printf("DIRECTX: Failed to create DXGI Factory!\n");
@@ -465,6 +482,51 @@ static bool InitializeConstantBuffer()
     return true;
 }
 
+#if defined(DIRECTX_INFOQUEUE)
+static bool InitializeInfoQueue()
+{
+    if (FAILED(driver.device->lpVtbl->QueryInterface(driver.device, &IID_ID3D12InfoQueue, (LPVOID*)&driver.infoQueue)))
+    {
+        printf("DIRECTX: Failed to initialize info queue!\n");
+        return false;
+    }
+
+    return true;
+}
+
+static void PollInfoQueue()
+{
+    if (driver.infoQueue == NULL)
+    {
+        return;
+    }
+
+    const UINT64 count = driver.infoQueue->lpVtbl->GetNumStoredMessagesAllowedByRetrievalFilter(driver.infoQueue);
+    for (UINT64 i = 0; i < count; i++)
+    {
+        SIZE_T length = 0;
+        if (FAILED(driver.infoQueue->lpVtbl->GetMessage(driver.infoQueue, i, NULL, &length)))
+        {
+            continue;
+        }
+
+        if (length == 0)
+        {
+            continue;
+        }
+
+        D3D12_MESSAGE* message = (D3D12_MESSAGE*)malloc(length);
+        if (SUCCEEDED(driver.infoQueue->lpVtbl->GetMessage(driver.infoQueue, i, message, &length)))
+        {
+            printf("DIRECTX: %s\n", message->pDescription);
+        }
+        free(message);
+    }
+
+    driver.infoQueue->lpVtbl->ClearStoredMessages(driver.infoQueue);
+}
+#endif
+
 static void WaitForPreviousFrame()
 {
     const UINT64 fenceValue = driver.fenceValue;
@@ -661,6 +723,10 @@ void rlglInit(int width, int height)
         return;
     }
 
+#if defined(DIRECTX_INFOQUEUE)
+    InitializeInfoQueue();
+#endif
+
     if (!InitializeFence())
     {
         return;
@@ -735,7 +801,17 @@ void rlDrawRenderBatchActive(void)
 
     driver.commandList->lpVtbl->IASetPrimitiveTopology(driver.commandList, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.pResource = driver.renderTargets[driver.frameIndex];
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
     ExecuteCommands();
+    WaitForPreviousFrame();
 }
 
 bool rlCheckRenderBatchLimit(int vCount) { return false; }
@@ -828,8 +904,11 @@ void rlPresent()
 
     ResetCommands();
 
-    WaitForPreviousFrame();
     driver.frameIndex = driver.swapChain->lpVtbl->GetCurrentBackBufferIndex(driver.swapChain);
+
+#if defined(DIRECTX_INFOQUEUE)
+    PollInfoQueue();
+#endif
 
     // Prepare render target for next frame
     UpdateRenderTarget();
