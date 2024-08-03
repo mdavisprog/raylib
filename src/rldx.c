@@ -49,10 +49,24 @@
 #define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
 
 #define NUM_DESCRIPTORS 100
+#define NUM_TEXTURES NUM_DESCRIPTORS - 2
 
 //----------------------------------------------------------------------------------
 // Types
 //----------------------------------------------------------------------------------
+
+typedef struct {
+    unsigned int id;
+    ID3D12Resource *data;
+    ID3D12Resource *upload;
+} DXTexture;
+
+typedef struct {
+    DXTexture *textures;
+    unsigned int size;
+    unsigned int count;
+    unsigned int index;
+} DXTexturePool;
 
 typedef struct {
     ID3D12DescriptorHeap* descriptorHeap;
@@ -77,6 +91,7 @@ typedef struct {
     ID3D12Resource *renderTargets[2];
     ID3D12Resource *constantBuffer;
     unsigned char *constantBufferPtr;
+    DXTexturePool texturePool;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
 #endif
@@ -87,6 +102,36 @@ typedef struct {
     Matrix mpv;
     char dummy[192];
 } ConstantBuffer;
+
+// TODO: Currently redefined from raylib.h. Ideally, these types should be
+// declared in a common header to be used in other files and prevent
+// name clashing with Windows.h.
+typedef enum {
+    PIXELFORMAT_UNCOMPRESSED_GRAYSCALE = 1, // 8 bit per pixel (no alpha)
+    PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA,    // 8*2 bpp (2 channels)
+    PIXELFORMAT_UNCOMPRESSED_R5G6B5,        // 16 bpp
+    PIXELFORMAT_UNCOMPRESSED_R8G8B8,        // 24 bpp
+    PIXELFORMAT_UNCOMPRESSED_R5G5B5A1,      // 16 bpp (1 bit alpha)
+    PIXELFORMAT_UNCOMPRESSED_R4G4B4A4,      // 16 bpp (4 bit alpha)
+    PIXELFORMAT_UNCOMPRESSED_R8G8B8A8,      // 32 bpp
+    PIXELFORMAT_UNCOMPRESSED_R32,           // 32 bpp (1 channel - float)
+    PIXELFORMAT_UNCOMPRESSED_R32G32B32,     // 32*3 bpp (3 channels - float)
+    PIXELFORMAT_UNCOMPRESSED_R32G32B32A32,  // 32*4 bpp (4 channels - float)
+    PIXELFORMAT_UNCOMPRESSED_R16,           // 16 bpp (1 channel - half float)
+    PIXELFORMAT_UNCOMPRESSED_R16G16B16,     // 16*3 bpp (3 channels - half float)
+    PIXELFORMAT_UNCOMPRESSED_R16G16B16A16,  // 16*4 bpp (4 channels - half float)
+    PIXELFORMAT_COMPRESSED_DXT1_RGB,        // 4 bpp (no alpha)
+    PIXELFORMAT_COMPRESSED_DXT1_RGBA,       // 4 bpp (1 bit alpha)
+    PIXELFORMAT_COMPRESSED_DXT3_RGBA,       // 8 bpp
+    PIXELFORMAT_COMPRESSED_DXT5_RGBA,       // 8 bpp
+    PIXELFORMAT_COMPRESSED_ETC1_RGB,        // 4 bpp
+    PIXELFORMAT_COMPRESSED_ETC2_RGB,        // 4 bpp
+    PIXELFORMAT_COMPRESSED_ETC2_EAC_RGBA,   // 8 bpp
+    PIXELFORMAT_COMPRESSED_PVRT_RGB,        // 4 bpp
+    PIXELFORMAT_COMPRESSED_PVRT_RGBA,       // 4 bpp
+    PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA,   // 8 bpp
+    PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA    // 2 bpp
+} PixelFormat;
 
 //----------------------------------------------------------------------------------
 // Variables
@@ -749,6 +794,13 @@ void rlglInit(int width, int height)
         return;
     }
 
+    driver.texturePool.size = NUM_TEXTURES;
+    driver.texturePool.count = 0;
+    driver.texturePool.index = 1;
+    const size_t texturePoolSize = sizeof(DXTexture) * NUM_TEXTURES;
+    driver.texturePool.textures = (DXTexture*)malloc(texturePoolSize);
+    memset(driver.texturePool.textures, 0, texturePoolSize);
+
     printf("DIRECTX: Initialized DirectX!\n");
 
     char* driverName = Windows_ToMultiByte(desc.Description);
@@ -760,6 +812,15 @@ void rlglInit(int width, int height)
 
 void rlglClose(void)
 {
+    for (unsigned int i = 0; i < driver.texturePool.count; i++)
+    {
+        DXTexture *texture = &driver.texturePool.textures[i];
+        DXRELEASE(texture->data);
+        DXRELEASE(texture->upload);
+    }
+
+    free(driver.texturePool.textures);
+
     DXRELEASE(driver.constantBuffer);
     DXRELEASE(driver.renderTargets[0]);
     DXRELEASE(driver.renderTargets[1]);
@@ -835,7 +896,127 @@ void rlDrawVertexArrayInstanced(int offset, int count, int instances) {}
 void rlDrawVertexArrayElementsInstanced(int offset, int count, const void *buffer, int instances) {}
 
 // Textures management
-unsigned int rlLoadTexture(const void *data, int width, int height, int format, int mipmapCount) { return 0; }
+unsigned int rlLoadTexture(const void *data, int width, int height, int format, int mipmapCount)
+{
+    unsigned int id = driver.texturePool.index++;
+    unsigned int index = id - 1;
+    DXTexture *texture = &driver.texturePool.textures[index];
+    texture->id = id;
+
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC description = { 0 };
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Alignment = 0;
+    description.Width = width;
+    description.Height = height;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.SampleDesc.Quality = 0;
+    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    description.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (LPVOID*)&texture->data);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create texture resource!\n");
+        return 0;
+    }
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts = { 0 };
+    UINT numRows;
+    UINT64 rowSizeInBytes;
+    UINT64 totalBytes;
+    driver.device->lpVtbl->GetCopyableFootprints(driver.device, &description, 0, 1, 0, &layouts, &numRows, &rowSizeInBytes, &totalBytes);
+
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    description.Format = DXGI_FORMAT_UNKNOWN;
+    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    description.Width = totalBytes;
+    description.Height = 1;
+    
+    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&texture->upload);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create texture upload resource!\n");
+        return 0;
+    }
+
+    unsigned char *uploadBuffer = NULL;
+    result = texture->upload->lpVtbl->Map(texture->upload, 0, NULL, (LPVOID*)&uploadBuffer);
+    if (FAILED(result))
+    {
+        DXRELEASE(texture->upload);
+        printf("DIRECTX: Failed to map upload resource memory!\n");
+        return 0;
+    }
+
+    D3D12_MEMCPY_DEST memcpyDest = { 0 };
+    memcpyDest.pData = uploadBuffer + layouts.Offset;
+    memcpyDest.RowPitch = layouts.Footprint.RowPitch;
+    memcpyDest.SlicePitch = (UINT64)layouts.Footprint.RowPitch * (UINT64)numRows;
+
+    D3D12_SUBRESOURCE_DATA textureData = { 0 };
+    textureData.pData = data;
+    textureData.RowPitch = format == PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA ? width * 2 : width * 4;
+    textureData.SlicePitch = textureData.RowPitch * height;
+
+    for (unsigned int slice = 0; slice < layouts.Footprint.Depth; slice++)
+    {
+        unsigned char *dest = (unsigned char*)memcpyDest.pData + memcpyDest.SlicePitch * slice;
+        const unsigned char *src = (unsigned char*)textureData.pData + textureData.SlicePitch * (UINT64)slice;
+
+        for (unsigned int row = 0; row < numRows; row++)
+        {
+            memcpy(dest + memcpyDest.RowPitch * row, src + textureData.RowPitch * (UINT64)row, rowSizeInBytes);
+        }
+    }
+
+    texture->upload->lpVtbl->Unmap(texture->upload, 0, NULL);
+
+    D3D12_TEXTURE_COPY_LOCATION copyDest = { 0 };
+    copyDest.pResource = texture->data;
+    copyDest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    copyDest.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION copySrc = { 0 };
+    copySrc.pResource = texture->upload;
+    copySrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    copySrc.PlacedFootprint = layouts;
+
+    driver.commandList->lpVtbl->CopyTextureRegion(driver.commandList, &copyDest, 0, 0, 0, &copySrc, NULL);
+
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.pResource = texture->data;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC shaderViewDesc = { 0 };
+    shaderViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    shaderViewDesc.Format = description.Format;
+    shaderViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    shaderViewDesc.Texture2D.MipLevels = 1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuOffset = CPUOffset(&driver.srv, index);
+    driver.device->lpVtbl->CreateShaderResourceView(driver.device, texture->data, &shaderViewDesc, cpuOffset);
+
+    driver.texturePool.count++;
+
+    return id;
+}
+
 unsigned int rlLoadTextureDepth(int width, int height, bool useRenderBuffer) { return 0; }
 unsigned int rlLoadTextureCubemap(const void *data, int size, int format) { return 0; }
 void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int height, int format, const void *data) {}
