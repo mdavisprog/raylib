@@ -35,6 +35,7 @@
 #include "platforms/rcore_desktop_windows_impl.h"
 
 #include <d3d12.h>
+#include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <stdio.h>
 
@@ -44,6 +45,10 @@
 
 #ifndef DIRECTX_INFOQUEUE
 #define DIRECTX_INFOQUEUE
+#endif
+
+#ifndef DIRECTX_SHADER_DEBUG
+// #define DIRECTX_SHADER_DEBUG
 #endif
 
 #define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
@@ -92,6 +97,7 @@ typedef struct {
     ID3D12Resource *constantBuffer;
     unsigned char *constantBufferPtr;
     DXTexturePool texturePool;
+    ID3D12PipelineState *defaultPipelineState;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
 #endif
@@ -636,6 +642,149 @@ static void UpdateRenderTarget()
     driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, NULL);
 }
 
+static bool InitializeDefaultShader()
+{
+    const char *vertexShaderCode =
+    "struct PSInput                         \n"
+    "{                                      \n"
+    "   float4 position : SV_POSITION;      \n"
+    "   float2 uv : TEXCOORD;               \n"
+    "};                                     \n"
+
+    "cbuffer ConstantBuffer : register(b0)  \n"
+    "{                                      \n"
+    "   float4x4 mvp;                       \n"
+    "   int pad[6];                         \n"
+    "}                                      \n"
+
+    "PSInput Main(float4 position : POSITION, float2 uv : TEXCOORD)     \n"
+    "{                                                                  \n"
+    "   PSInput result;                                                 \n"
+    "   result.position = mul(mvp, float4(position.xyz, 1.0));          \n"
+    "   result.uv = uv;                                                 \n"
+    "   return result;                                                  \n"
+    "}";
+
+    const char *fragmentShaderCode =
+    "struct PSInput                         \n"
+    "{                                      \n"
+    "   float4 position : SV_POSITION;      \n"
+    "   float2 uv : TEXCOORD;               \n"
+    "};                                     \n"
+    "Texture2D g_Texture : register(t0);    \n"
+    "SamplerState g_Sampler : register(s0); \n"
+    "float4 Main(PSInput input) : SV_TARGET \n"
+    "{                                      \n"
+    "   return g_Texture.Sample(g_Sampler, input.uv); \n"
+    "}";
+
+    const size_t vertexShaderCodeLen = strlen(vertexShaderCode);
+    const size_t fragmentShaderCodeLen = strlen(fragmentShaderCode);
+    UINT compileFlags = 0;
+
+#if defined(DIRECTX_SHADER_DEBUG)
+    compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    ID3DBlob *vertexShaderBlob = NULL;
+    ID3DBlob *fragmentShaderBlob = NULL;
+    ID3DBlob *errors = NULL;
+
+    HRESULT result = D3DCompile(vertexShaderCode, vertexShaderCodeLen, "defaultVS", NULL, NULL, "Main", "vs_5_0", compileFlags, 0, &vertexShaderBlob, &errors);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to compile default vertex shader! Error: %s\n", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
+        return false;
+    }
+
+    result = D3DCompile(fragmentShaderCode, fragmentShaderCodeLen, "defaultFS", NULL, NULL, "Main", "ps_5_0", compileFlags, 0, &fragmentShaderBlob, &errors);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to compile default fragment shader! Error: %s\n", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
+        return false;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC elements[2] = { {0}, {0} };
+    elements[0].SemanticName = "POSITION";
+    elements[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    elements[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+    elements[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+
+    elements[1].SemanticName = "TEXCOORD";
+    elements[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    elements[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+    elements[1].Format = DXGI_FORMAT_R32G32_FLOAT;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = { 0 };
+    graphicsDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    graphicsDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    graphicsDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    graphicsDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    graphicsDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    graphicsDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    graphicsDesc.RasterizerState.DepthClipEnable = TRUE;
+    graphicsDesc.RasterizerState.MultisampleEnable = FALSE;
+    graphicsDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    graphicsDesc.RasterizerState.ForcedSampleCount = 0;
+    graphicsDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    graphicsDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    graphicsDesc.BlendState.IndependentBlendEnable = FALSE;
+    for (UINT I = 0; I < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++I)
+    {
+        graphicsDesc.BlendState.RenderTarget[I].BlendEnable = TRUE;
+        graphicsDesc.BlendState.RenderTarget[I].LogicOpEnable = FALSE;
+        graphicsDesc.BlendState.RenderTarget[I].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        graphicsDesc.BlendState.RenderTarget[I].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        graphicsDesc.BlendState.RenderTarget[I].BlendOp = D3D12_BLEND_OP_ADD;
+        graphicsDesc.BlendState.RenderTarget[I].SrcBlendAlpha = D3D12_BLEND_ONE;
+        graphicsDesc.BlendState.RenderTarget[I].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        graphicsDesc.BlendState.RenderTarget[I].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        graphicsDesc.BlendState.RenderTarget[I].LogicOp = D3D12_LOGIC_OP_NOOP;
+        graphicsDesc.BlendState.RenderTarget[I].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    }
+
+    graphicsDesc.SampleMask = UINT_MAX;
+    graphicsDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    graphicsDesc.NumRenderTargets = 1;
+    graphicsDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    graphicsDesc.SampleDesc.Count = 1;
+
+    graphicsDesc.InputLayout.pInputElementDescs = elements;
+    graphicsDesc.InputLayout.NumElements = _countof(elements);
+    graphicsDesc.pRootSignature = driver.rootSignature;
+    graphicsDesc.VS.pShaderBytecode = vertexShaderBlob->lpVtbl->GetBufferPointer(vertexShaderBlob);
+    graphicsDesc.VS.BytecodeLength = vertexShaderBlob->lpVtbl->GetBufferSize(vertexShaderBlob);
+    graphicsDesc.PS.pShaderBytecode = fragmentShaderBlob->lpVtbl->GetBufferPointer(fragmentShaderBlob);
+    graphicsDesc.PS.BytecodeLength = fragmentShaderBlob->lpVtbl->GetBufferSize(fragmentShaderBlob);
+
+    graphicsDesc.DepthStencilState.DepthEnable = TRUE;
+    graphicsDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    graphicsDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    graphicsDesc.DepthStencilState.StencilEnable = TRUE;
+    graphicsDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    graphicsDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    graphicsDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    graphicsDesc.DepthStencilState.BackFace = graphicsDesc.DepthStencilState.FrontFace;
+    graphicsDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+    bool success = true;
+    result = driver.device->lpVtbl->CreateGraphicsPipelineState(driver.device, &graphicsDesc, &IID_ID3D12PipelineState, (LPVOID*)&driver.defaultPipelineState);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create default graphics pipeline state!\n");
+        success = false;
+    }
+
+    DXRELEASE(vertexShaderBlob);
+    DXRELEASE(fragmentShaderBlob);
+
+    return success;
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
@@ -783,6 +932,11 @@ void rlglInit(int width, int height)
     }
 
     if (!InitializeConstantBuffer())
+    {
+        return;
+    }
+
+    if (!InitializeDefaultShader())
     {
         return;
     }
