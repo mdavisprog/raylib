@@ -785,6 +785,11 @@ static bool InitializeDefaultShader()
     return success;
 }
 
+static void BindDefaultPipeline()
+{
+    driver.commandList->lpVtbl->SetPipelineState(driver.commandList, driver.defaultPipelineState);
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
@@ -940,6 +945,8 @@ void rlglInit(int width, int height)
     {
         return;
     }
+
+    BindDefaultPipeline();
 
     DXGI_ADAPTER_DESC1 desc = { 0 };
     if (FAILED(driver.adapter->lpVtbl->GetDesc1(driver.adapter, &desc)))
@@ -1247,4 +1254,5 @@ void rlPresent()
 
     // Prepare render target for next frame
     UpdateRenderTarget();
+    BindDefaultPipeline();
 }
