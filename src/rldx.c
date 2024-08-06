@@ -61,6 +61,13 @@
 //----------------------------------------------------------------------------------
 
 typedef struct {
+    unsigned char *data;
+    size_t elementSize;
+    size_t length;
+    size_t capacity;
+} Vector;
+
+typedef struct {
     unsigned int id;
     ID3D12Resource *data;
     ID3D12Resource *upload;
@@ -155,6 +162,95 @@ extern void *GetWindowHandle(void);
 //----------------------------------------------------------------------------------
 // Utility functions
 //----------------------------------------------------------------------------------
+
+static Vector VectorCreate(size_t elementSize)
+{
+    Vector result = { 0 };
+    result.elementSize = elementSize;
+    result.length = 0;
+    result.capacity = 1;
+    result.data = (unsigned char*)malloc(elementSize * result.capacity);
+    return result;
+}
+
+static void VectorDestroy(Vector *vector)
+{
+    if (vector == NULL)
+    {
+        return;
+    }
+
+    if (vector->data != NULL)
+    {
+        free(vector->data);
+    }
+
+    vector->data = NULL;
+    vector->elementSize = 0;
+    vector->length = 0;
+    vector->capacity = 0;
+}
+
+static void VectorResize(Vector *vector, size_t capacity)
+{
+    if (vector == NULL || vector->elementSize == 0)
+    {
+        return;
+    }
+
+    vector->capacity = capacity;
+    vector->data = realloc(vector->data, capacity);
+}
+
+static void VectorPush(Vector *vector, void *element)
+{
+    if (vector == NULL || element == NULL || vector->elementSize == 0)
+    {
+        return;
+    }
+
+    if (vector->length == vector->capacity)
+    {
+        VectorResize(vector, vector->capacity * 2);
+    }
+
+    const size_t offset = vector->length * vector->elementSize;
+    memcpy(vector->data + offset, element, vector->elementSize);
+    vector->length++;;
+}
+
+static bool VectorRemove(Vector *vector, size_t index)
+{
+    if (vector == NULL || vector->elementSize == 0 || index >= vector->length)
+    {
+        return false;
+    }
+
+    if (index == vector->length - 1)
+    {
+        vector->length--;
+        return true;
+    }
+
+    unsigned char *start = vector->data + index * vector->elementSize;
+    unsigned char *end = start + vector->elementSize;
+    const size_t count = vector->length - (index + 1);
+    const size_t size = count * vector->elementSize;
+    memmove(start, end, size);
+    vector->length--;
+
+    return true;
+}
+
+static unsigned char *VectorGet(Vector *vector, size_t index)
+{
+    if (vector == NULL || vector->elementSize == 0 || index >= vector->length)
+    {
+        return NULL;
+    }
+
+    return &vector->data[vector->elementSize * index];
+}
 
 static bool EnumAdapter(UINT index, IDXGIFactory7* factory, IDXGIAdapter1** adapter)
 {
