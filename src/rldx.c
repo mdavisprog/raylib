@@ -172,7 +172,7 @@ static void VectorResize(Vector *vector, size_t capacity)
     }
 
     vector->capacity = capacity;
-    vector->data = realloc(vector->data, capacity);
+    vector->data = realloc(vector->data, vector->elementSize * capacity);
 }
 
 static void VectorPush(Vector *vector, void *element)
@@ -189,7 +189,7 @@ static void VectorPush(Vector *vector, void *element)
 
     const size_t offset = vector->length * vector->elementSize;
     memcpy(vector->data + offset, element, vector->elementSize);
-    vector->length++;;
+    vector->length++;
 }
 
 static bool VectorRemove(Vector *vector, size_t index)
