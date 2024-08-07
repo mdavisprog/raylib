@@ -68,15 +68,17 @@ typedef struct {
 } Vector;
 
 typedef struct {
+    Vector pool;
+    unsigned int index;
+} ObjectPool;
+
+typedef struct {
     unsigned int id;
     ID3D12Resource *data;
     ID3D12Resource *upload;
 } DXTexture;
 
 typedef struct {
-    Vector pool;
-    unsigned int index;
-} DXTexturePool;
 
 typedef struct {
     ID3D12DescriptorHeap* descriptorHeap;
@@ -101,7 +103,7 @@ typedef struct {
     ID3D12Resource *renderTargets[2];
     ID3D12Resource *constantBuffer;
     unsigned char *constantBufferPtr;
-    DXTexturePool texturePool;
+    ObjectPool textures;
     ID3D12PipelineState *defaultPipelineState;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
@@ -1024,8 +1026,8 @@ void rlglInit(int width, int height)
         return;
     }
 
-    driver.texturePool.pool = VectorCreate(sizeof(DXTexture));
-    driver.texturePool.index = 1;
+    driver.textures.pool = VectorCreate(sizeof(DXTexture));
+    driver.textures.index = 1;
 
     printf("DIRECTX: Initialized DirectX!\n");
 
@@ -1042,13 +1044,13 @@ void rlglInit(int width, int height)
 
 void rlglClose(void)
 {
-    for (size_t i = 0; i < driver.texturePool.pool.length; i++)
+    for (size_t i = 0; i < driver.textures.pool.length; i++)
     {
-        DXTexture *texture = (DXTexture*)VectorGet(&driver.texturePool.pool, i);
+        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
         DXRELEASE(texture->data);
         DXRELEASE(texture->upload);
     }
-    VectorDestroy(&driver.texturePool.pool);
+    VectorDestroy(&driver.textures.pool);
 
     DXRELEASE(driver.constantBuffer);
     DXRELEASE(driver.renderTargets[0]);
@@ -1128,7 +1130,6 @@ void rlDrawVertexArrayElementsInstanced(int offset, int count, const void *buffe
 unsigned int rlLoadTexture(const void *data, int width, int height, int format, int mipmapCount)
 {
     DXTexture texture = { 0 };
-    texture.id = driver.texturePool.index++;
 
     D3D12_HEAP_PROPERTIES heap = { 0 };
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -1238,11 +1239,12 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     shaderViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     shaderViewDesc.Texture2D.MipLevels = 1;
 
-    const UINT index = (UINT)driver.texturePool.pool.length;
+    const UINT index = (UINT)driver.textures.pool.length;
     D3D12_CPU_DESCRIPTOR_HANDLE cpuOffset = CPUOffset(&driver.srv, index);
     driver.device->lpVtbl->CreateShaderResourceView(driver.device, texture.data, &shaderViewDesc, cpuOffset);
+    texture.id = driver.textures.index++;
 
-    VectorPush(&driver.texturePool.pool, &texture);
+    VectorPush(&driver.textures.pool, &texture);
 
     return texture.id;
 }
