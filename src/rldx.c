@@ -114,12 +114,17 @@ typedef struct {
     char dummy[192];
 } ConstantBuffer;
 
+typedef struct {
+    unsigned int defaultTextureId;
+} DXState;
+
 //----------------------------------------------------------------------------------
 // Variables
 //----------------------------------------------------------------------------------
 
 static const int constantBufferIndex = NUM_DESCRIPTORS - 1;
 static DriverData driver = { 0 };
+static DXState dxState = { 0 };
 
 //----------------------------------------------------------------------------------
 // External functions
@@ -1027,6 +1032,10 @@ void rlglInit(int width, int height)
     char* driverName = Windows_ToMultiByte(desc.Description);
     printf("DIRECTX: Driver is %s.\n", driverName);
     free(driverName);
+
+    // Init default white texture
+    unsigned char pixels[4] = { 255, 255, 255, 255 };   // 1 pixel RGBA (4 bytes)
+    dxState.defaultTextureId = rlLoadTexture(pixels, 1, 1, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
 
     UpdateRenderTarget();
 }
