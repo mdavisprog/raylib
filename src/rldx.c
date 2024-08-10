@@ -152,7 +152,7 @@ static Vector VectorCreate(size_t elementSize)
     result.elementSize = elementSize;
     result.length = 0;
     result.capacity = 1;
-    result.data = (unsigned char*)malloc(elementSize * result.capacity);
+    result.data = (unsigned char*)RL_MALLOC(elementSize * result.capacity);
     return result;
 }
 
@@ -165,7 +165,7 @@ static void VectorDestroy(Vector *vector)
 
     if (vector->data != NULL)
     {
-        free(vector->data);
+        RL_FREE(vector->data);
     }
 
     vector->data = NULL;
@@ -182,7 +182,7 @@ static void VectorResize(Vector *vector, size_t capacity)
     }
 
     vector->capacity = capacity;
-    vector->data = realloc(vector->data, vector->elementSize * capacity);
+    vector->data = RL_REALLOC(vector->data, vector->elementSize * capacity);
 }
 
 static void VectorPush(Vector *vector, void *element)
@@ -645,12 +645,12 @@ static void PollInfoQueue()
             continue;
         }
 
-        D3D12_MESSAGE* message = (D3D12_MESSAGE*)malloc(length);
+        D3D12_MESSAGE* message = (D3D12_MESSAGE*)RL_MALLOC(length);
         if (SUCCEEDED(driver.infoQueue->lpVtbl->GetMessage(driver.infoQueue, i, message, &length)))
         {
             printf("DIRECTX: %s\n", message->pDescription);
         }
-        free(message);
+        RL_FREE(message);
     }
 
     driver.infoQueue->lpVtbl->ClearStoredMessages(driver.infoQueue);
@@ -1109,7 +1109,7 @@ void rlglInit(int width, int height)
 
     char* driverName = Windows_ToMultiByte(desc.Description);
     printf("DIRECTX: Driver is %s.\n", driverName);
-    free(driverName);
+    RL_FREE(driverName);
 
     // Init default white texture
     unsigned char pixels[4] = { 255, 255, 255, 255 };   // 1 pixel RGBA (4 bytes)
@@ -1182,15 +1182,15 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
     const size_t colorsSize = bufferElements * colorSize;
     const size_t indicesSize = bufferElements * 6 * sizeof(unsigned int);
 
-    batch.vertexBuffer = (rlVertexBuffer*)malloc(numBuffers * sizeof(rlVertexBuffer));
+    batch.vertexBuffer = (rlVertexBuffer*)RL_MALLOC(numBuffers * sizeof(rlVertexBuffer));
     for (int i = 0; i < numBuffers; i++)
     {
         batch.vertexBuffer[i].elementCount = bufferElements;
-        batch.vertexBuffer[i].vertices = (float *)malloc(verticesSize);        // 3 float by vertex, 4 vertex by quad
-        batch.vertexBuffer[i].texcoords = (float *)malloc(texcoordsSize);       // 2 float by texcoord, 4 texcoord by quad
-        batch.vertexBuffer[i].normals = (float *)malloc(normalsSize);        // 3 float by vertex, 4 vertex by quad
-        batch.vertexBuffer[i].colors = (unsigned char *)malloc(colorsSize);   // 4 float by color, 4 colors by quad
-        batch.vertexBuffer[i].indices = (unsigned int *)malloc(indicesSize);      // 6 int by quad (indices)
+        batch.vertexBuffer[i].vertices = (float *)RL_MALLOC(verticesSize);        // 3 float by vertex, 4 vertex by quad
+        batch.vertexBuffer[i].texcoords = (float *)RL_MALLOC(texcoordsSize);       // 2 float by texcoord, 4 texcoord by quad
+        batch.vertexBuffer[i].normals = (float *)RL_MALLOC(normalsSize);        // 3 float by vertex, 4 vertex by quad
+        batch.vertexBuffer[i].colors = (unsigned char *)RL_MALLOC(colorsSize);   // 4 float by color, 4 colors by quad
+        batch.vertexBuffer[i].indices = (unsigned int *)RL_MALLOC(indicesSize);      // 6 int by quad (indices)
 
         for (int j = 0; j < (3*4*bufferElements); j++) batch.vertexBuffer[i].vertices[j] = 0.0f;
         for (int j = 0; j < (2*4*bufferElements); j++) batch.vertexBuffer[i].texcoords[j] = 0.0f;
@@ -1220,7 +1220,7 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
 
     // Init draw calls tracking system
     //--------------------------------------------------------------------------------------------
-    batch.draws = (rlDrawCall *)malloc(RL_DEFAULT_BATCH_DRAWCALLS*sizeof(rlDrawCall));
+    batch.draws = (rlDrawCall *)RL_MALLOC(RL_DEFAULT_BATCH_DRAWCALLS*sizeof(rlDrawCall));
 
     for (int i = 0; i < RL_DEFAULT_BATCH_DRAWCALLS; i++)
     {
