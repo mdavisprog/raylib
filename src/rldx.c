@@ -79,6 +79,12 @@ typedef struct {
 } DXTexture;
 
 typedef struct {
+    unsigned int id;
+    ID3D12Resource *vertex;
+    ID3D12Resource *index;
+    D3D12_VERTEX_BUFFER_VIEW vertexView;
+    D3D12_INDEX_BUFFER_VIEW indexView;
+} DXRenderBuffer;
 
 typedef struct {
     ID3D12DescriptorHeap* descriptorHeap;
@@ -104,6 +110,7 @@ typedef struct {
     ID3D12Resource *constantBuffer;
     unsigned char *constantBufferPtr;
     ObjectPool textures;
+    ObjectPool renderBuffers;
     ID3D12PipelineState *defaultPipelineState;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
@@ -861,6 +868,71 @@ static void BindDefaultPipeline()
     driver.commandList->lpVtbl->SetPipelineState(driver.commandList, driver.defaultPipelineState);
 }
 
+static unsigned int CreateRenderBuffer(UINT64 vertexBufferSize, UINT64 indexBufferSize, UINT stride)
+{
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resource = { 0 };
+    resource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resource.Alignment = 0;
+    resource.Width = vertexBufferSize;
+    resource.Height = 1;
+    resource.DepthOrArraySize = 1;
+    resource.MipLevels = 1;
+    resource.Format = DXGI_FORMAT_UNKNOWN;
+    resource.SampleDesc.Count = 1;
+    resource.SampleDesc.Quality = 0;
+    resource.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resource.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    DXRenderBuffer buffer = { 0 };
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.vertex);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create vertex buffer resource!\n");
+        return 0;
+    }
+
+    resource.Width = indexBufferSize;
+    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.index);
+    if (FAILED(result))
+    {
+        printf("DIRECTX: Failed to create index buffer resource!\n");
+        return 0;
+    }
+
+    buffer.vertexView.BufferLocation = buffer.vertex->lpVtbl->GetGPUVirtualAddress(buffer.vertex);
+    buffer.vertexView.StrideInBytes = stride;
+
+    buffer.indexView.BufferLocation = buffer.index->lpVtbl->GetGPUVirtualAddress(buffer.index);
+    buffer.indexView.Format = DXGI_FORMAT_R32_UINT;
+
+    buffer.id = driver.renderBuffers.index++;
+    VectorPush(&driver.renderBuffers.pool, &buffer);
+
+    return buffer.id;
+}
+
+static DXRenderBuffer *GetRenderBuffer(unsigned int id)
+{
+    for (size_t i = 0; i < driver.renderBuffers.pool.length; i++)
+    {
+        DXRenderBuffer *buffer = (DXRenderBuffer*)VectorGet(&driver.renderBuffers.pool, i);
+
+        if (buffer->id == id)
+        {
+            return buffer;
+        }
+    }
+
+    return NULL;
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
@@ -1029,6 +1101,9 @@ void rlglInit(int width, int height)
     driver.textures.pool = VectorCreate(sizeof(DXTexture));
     driver.textures.index = 1;
 
+    driver.renderBuffers.pool = VectorCreate(sizeof(DXRenderBuffer));
+    driver.renderBuffers.index = 1;
+
     printf("DIRECTX: Initialized DirectX!\n");
 
     char* driverName = Windows_ToMultiByte(desc.Description);
@@ -1051,6 +1126,14 @@ void rlglClose(void)
         DXRELEASE(texture->upload);
     }
     VectorDestroy(&driver.textures.pool);
+
+    for (size_t i = 0; i < driver.renderBuffers.pool.length; i++)
+    {
+        DXRenderBuffer* renderBuffer = (DXRenderBuffer*)VectorGet(&driver.renderBuffers.pool, i);
+        DXRELEASE(renderBuffer->vertex);
+        DXRELEASE(renderBuffer->index);
+    }
+    VectorDestroy(&driver.renderBuffers.pool);
 
     DXRELEASE(driver.constantBuffer);
     DXRELEASE(driver.renderTargets[0]);
