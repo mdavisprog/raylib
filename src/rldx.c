@@ -125,6 +125,7 @@ typedef struct {
 
 typedef struct {
     unsigned int defaultTextureId;
+    rlRenderBatch defaultBatch;
 } DXState;
 
 //----------------------------------------------------------------------------------
@@ -1113,12 +1114,15 @@ void rlglInit(int width, int height)
     // Init default white texture
     unsigned char pixels[4] = { 255, 255, 255, 255 };   // 1 pixel RGBA (4 bytes)
     dxState.defaultTextureId = rlLoadTexture(pixels, 1, 1, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
+    dxState.defaultBatch = rlLoadRenderBatch(RL_DEFAULT_BATCH_BUFFERS, RL_DEFAULT_BATCH_BUFFER_ELEMENTS);
 
     UpdateRenderTarget();
 }
 
 void rlglClose(void)
 {
+    rlUnloadRenderBatch(dxState.defaultBatch);
+
     for (size_t i = 0; i < driver.textures.pool.length; i++)
     {
         DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
@@ -1163,8 +1167,102 @@ unsigned int rlGetShaderIdDefault(void) { return 0; }
 int *rlGetShaderLocsDefault(void) { return 0; }
 
 // Render batch management
-rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements) { rlRenderBatch result = {0}; return result; }
-void rlUnloadRenderBatch(rlRenderBatch batch) {}
+rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
+{
+    rlRenderBatch batch = { 0 };
+
+    const size_t vertexSize = 3 * 4 * sizeof(float);
+    const size_t texcoordSize = 2 * 4 * sizeof(float);
+    const size_t normalSize = vertexSize;
+    const size_t colorSize = 4 * 4 * sizeof(unsigned char);
+
+    const size_t verticesSize = bufferElements * vertexSize;
+    const size_t texcoordsSize = bufferElements * texcoordSize;
+    const size_t normalsSize = bufferElements * vertexSize;
+    const size_t colorsSize = bufferElements * colorSize;
+    const size_t indicesSize = bufferElements * 6 * sizeof(unsigned int);
+
+    batch.vertexBuffer = (rlVertexBuffer*)malloc(numBuffers * sizeof(rlVertexBuffer));
+    for (int i = 0; i < numBuffers; i++)
+    {
+        batch.vertexBuffer[i].elementCount = bufferElements;
+        batch.vertexBuffer[i].vertices = (float *)malloc(verticesSize);        // 3 float by vertex, 4 vertex by quad
+        batch.vertexBuffer[i].texcoords = (float *)malloc(texcoordsSize);       // 2 float by texcoord, 4 texcoord by quad
+        batch.vertexBuffer[i].normals = (float *)malloc(normalsSize);        // 3 float by vertex, 4 vertex by quad
+        batch.vertexBuffer[i].colors = (unsigned char *)malloc(colorsSize);   // 4 float by color, 4 colors by quad
+        batch.vertexBuffer[i].indices = (unsigned int *)malloc(indicesSize);      // 6 int by quad (indices)
+
+        for (int j = 0; j < (3*4*bufferElements); j++) batch.vertexBuffer[i].vertices[j] = 0.0f;
+        for (int j = 0; j < (2*4*bufferElements); j++) batch.vertexBuffer[i].texcoords[j] = 0.0f;
+        for (int j = 0; j < (3*4*bufferElements); j++) batch.vertexBuffer[i].normals[j] = 0.0f;
+        for (int j = 0; j < (4*4*bufferElements); j++) batch.vertexBuffer[i].colors[j] = 0;
+
+        int k = 0;
+
+        // Indices can be initialized right now
+        for (int j = 0; j < (6*bufferElements); j += 6)
+        {
+            batch.vertexBuffer[i].indices[j] = 4*k;
+            batch.vertexBuffer[i].indices[j + 1] = 4*k + 1;
+            batch.vertexBuffer[i].indices[j + 2] = 4*k + 2;
+            batch.vertexBuffer[i].indices[j + 3] = 4*k;
+            batch.vertexBuffer[i].indices[j + 4] = 4*k + 2;
+            batch.vertexBuffer[i].indices[j + 5] = 4*k + 3;
+
+            k++;
+        }
+    }
+
+    for (int i = 0; i < numBuffers; i++)
+    {
+        batch.vertexBuffer[i].vaoId = CreateRenderBuffer(verticesSize + texcoordsSize + colorsSize, indicesSize, (UINT)(vertexSize + texcoordSize + colorSize));
+    }
+
+    // Init draw calls tracking system
+    //--------------------------------------------------------------------------------------------
+    batch.draws = (rlDrawCall *)malloc(RL_DEFAULT_BATCH_DRAWCALLS*sizeof(rlDrawCall));
+
+    for (int i = 0; i < RL_DEFAULT_BATCH_DRAWCALLS; i++)
+    {
+        batch.draws[i].mode = RL_QUADS;
+        batch.draws[i].vertexCount = 0;
+        batch.draws[i].vertexAlignment = 0;
+        batch.draws[i].textureId = dxState.defaultTextureId;
+    }
+
+    batch.bufferCount = numBuffers;    // Record buffer count
+    batch.drawCounter = 1;             // Reset draws counter
+    batch.currentDepth = -1.0f;         // Reset depth value
+    
+    return batch;
+}
+
+void rlUnloadRenderBatch(rlRenderBatch batch)
+{
+    for (int i = 0; i < batch.bufferCount; i++)
+    {
+        rlVertexBuffer *vertexBuffer = &batch.vertexBuffer[i];
+        RL_FREE(vertexBuffer->vertices);
+        RL_FREE(vertexBuffer->texcoords);
+        RL_FREE(vertexBuffer->normals);
+        RL_FREE(vertexBuffer->colors);
+        RL_FREE(vertexBuffer->indices);
+
+        DXRenderBuffer *renderBuffer = GetRenderBuffer(vertexBuffer->vaoId);
+
+        if (renderBuffer == NULL)
+        {
+            continue;
+        }
+
+        DXRELEASE(renderBuffer->vertex);
+        DXRELEASE(renderBuffer->index);
+    }
+
+    RL_FREE(batch.vertexBuffer);
+    RL_FREE(batch.draws);
+}
+
 void rlDrawRenderBatch(rlRenderBatch *batch) {}
 void rlSetRenderBatchActive(rlRenderBatch *batch) {}
 
