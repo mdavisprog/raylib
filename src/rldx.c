@@ -41,6 +41,13 @@
 #include <stdio.h>
 
 //----------------------------------------------------------------------------------
+// External functions
+//----------------------------------------------------------------------------------
+
+extern void *GetWindowHandle(void);
+extern void TraceLog(int, const char*, ...);
+
+//----------------------------------------------------------------------------------
 // Defines and Macros
 //----------------------------------------------------------------------------------
 
@@ -68,6 +75,13 @@
 #ifndef RAD2DEG
     #define RAD2DEG (180.0f/PI)
 #endif
+
+#ifdef TRACELOG
+    #undef TRACELOG
+#endif
+
+#define TRACELOG(level, ...) TraceLog(level, __VA_ARGS__)
+#define DXTRACELOG(level, msg, ...) TRACELOG(level, "DIRECTX: " ##msg, __VA_ARGS__);
 
 //----------------------------------------------------------------------------------
 // Types
@@ -160,12 +174,6 @@ typedef struct {
 static const int constantBufferIndex = NUM_DESCRIPTORS - 1;
 static DriverData driver = { 0 };
 static DXState dxState = { 0 };
-
-//----------------------------------------------------------------------------------
-// External functions
-//----------------------------------------------------------------------------------
-
-extern void *GetWindowHandle(void);
 
 //----------------------------------------------------------------------------------
 // Utility functions
@@ -273,7 +281,7 @@ static bool IsValidAdapter(IDXGIAdapter1* adapter)
 
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to retrieve description for adaptar!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to retrieve description for adaptar!");
         return false;
     }
 
@@ -328,7 +336,7 @@ static bool InitializeDevice()
     HRESULT result = CreateDXGIFactory2(factoryFlags, &IID_IDXGIFactory7, (LPVOID*)&factory);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create DXGI Factory!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create DXGI Factory!");
         return false;
     }
 
@@ -336,7 +344,7 @@ static bool InitializeDevice()
     result = factory->lpVtbl->QueryInterface(factory, &IID_IDXGIFactory7, (LPVOID*)&queryFactory);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to query factory interface!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to query factory interface!\n");
         return false;
     }
 
@@ -367,14 +375,14 @@ static bool InitializeDevice()
     IUnknown* unknownAdapter = NULL;
     if (FAILED(adapter->lpVtbl->QueryInterface(adapter, &IID_IUnknown, (LPVOID*)&unknownAdapter)))
     {
-        printf("DIRECTX: Failed to query IUnknown for IDXGIAdapter!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to query IUnknown for IDXGIAdapter!");
         return false;
     }
 
     result = D3D12CreateDevice(unknownAdapter, D3D_FEATURE_LEVEL_12_0, &IID_ID3D12Device9, (LPVOID*)&driver.device);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create device!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create device!");
         return false;
     }
 
@@ -389,21 +397,21 @@ static bool InitializeCommands()
     HRESULT result = driver.device->lpVtbl->CreateCommandQueue(driver.device, &commandQueueDesc, &IID_ID3D12CommandQueue, (LPVOID*)&driver.commandQueue);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create command queue!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create command queue!");
         return false;
     }
 
     result = driver.device->lpVtbl->CreateCommandAllocator(driver.device, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (LPVOID*)&driver.commandAllocator);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create command allocator!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create command allocator!");
         return false;
     }
 
     result = driver.device->lpVtbl->CreateCommandList(driver.device, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, driver.commandAllocator, NULL, &IID_ID3D12GraphicsCommandList1, (LPVOID*)&driver.commandList);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create command list!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create command list!");
         return false;
     }
 
@@ -473,7 +481,7 @@ static bool InitializeRootSignature()
     result = D3D12SerializeVersionedRootSignature(&rootSignatureDesc, &signature, &error);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to serialize versioned root signature! Error: %s\n", (LPCSTR)error->lpVtbl->GetBufferPointer(error));
+        DXTRACELOG(RL_LOG_ERROR, "Failed to serialize versioned root signature! Error: %s", (LPCSTR)error->lpVtbl->GetBufferPointer(error));
         return false;
     }
 
@@ -481,7 +489,7 @@ static bool InitializeRootSignature()
         signature->lpVtbl->GetBufferSize(signature), &IID_ID3D12RootSignature, (LPVOID*)&driver.rootSignature);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create root signature!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create root signature!");
         return false;
     }
 
@@ -493,7 +501,7 @@ static bool InitializeFence()
     HRESULT result = driver.device->lpVtbl->CreateFence(driver.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (LPVOID*)&driver.fence);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create fence!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create fence!");
         return false;
     }
     driver.fenceValue = 0;
@@ -501,7 +509,7 @@ static bool InitializeFence()
     driver.fenceEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (driver.fenceEvent == NULL)
     {
-        printf("DIRECTX: Failed to create fence event!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create fence event!");
         return false;
     }
 
@@ -528,7 +536,7 @@ static bool InitializeRenderTarget(UINT index)
 {
     if (FAILED(driver.swapChain->lpVtbl->GetBuffer(driver.swapChain, index, &IID_ID3D12Resource, (LPVOID*)&driver.renderTargets[index])))
     {
-        printf("DIRECTX: Failed to retrieve buffer for render target index: %d!\n", index);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to retrieve buffer for render target index: %d!", index);
         return false;
     }
 
@@ -542,7 +550,7 @@ static bool InitializeSwapChain(UINT width, UINT height)
 {
     if (!CreateDescriptorHeap(&driver.rtv, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
     {
-        printf("DIRECTX: Failed to create render target descriptors!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create render target descriptors!");
         return false;
     }
 
@@ -550,7 +558,7 @@ static bool InitializeSwapChain(UINT width, UINT height)
     HRESULT result = driver.commandQueue->lpVtbl->QueryInterface(driver.commandQueue, &IID_IUnknown, (LPVOID*)&unknownCommandQueue);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to query for IUnknown command queue!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to query for IUnknown command queue!");
         return false;
     }
 
@@ -568,14 +576,14 @@ static bool InitializeSwapChain(UINT width, UINT height)
     result = driver.factory->lpVtbl->CreateSwapChainForHwnd(driver.factory, unknownCommandQueue, handle, &swapChainDesc, NULL, NULL, &swapChain);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create swap chain!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create swap chain!");
         return false;
     }
 
     result = driver.factory->lpVtbl->MakeWindowAssociation(driver.factory, handle, DXGI_MWA_NO_ALT_ENTER);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to make window association!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to make window association!");
         return false;
     }
     swapChain->lpVtbl->QueryInterface(swapChain, &IID_IDXGISwapChain4, (LPVOID*)&driver.swapChain);
@@ -615,7 +623,7 @@ static bool InitializeConstantBuffer()
         D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&driver.constantBuffer);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create constant buffer resource!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create constant buffer resource!");
         return false;
     }
 
@@ -630,7 +638,7 @@ static bool InitializeConstantBuffer()
     result = driver.constantBuffer->lpVtbl->Map(driver.constantBuffer, 0, &range, (LPVOID*)&driver.constantBufferPtr);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to map constant buffer memory!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to map constant buffer memory!");
         return false;
     }
 
@@ -642,7 +650,7 @@ static bool InitializeInfoQueue()
 {
     if (FAILED(driver.device->lpVtbl->QueryInterface(driver.device, &IID_ID3D12InfoQueue, (LPVOID*)&driver.infoQueue)))
     {
-        printf("DIRECTX: Failed to initialize info queue!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to initialize info queue!");
         return false;
     }
 
@@ -673,7 +681,7 @@ static void PollInfoQueue()
         D3D12_MESSAGE* message = (D3D12_MESSAGE*)RL_MALLOC(length);
         if (SUCCEEDED(driver.infoQueue->lpVtbl->GetMessage(driver.infoQueue, i, message, &length)))
         {
-            printf("DIRECTX: %s\n", message->pDescription);
+            DXTRACELOG(RL_LOG_INFO, "%s", message->pDescription);
         }
         RL_FREE(message);
     }
@@ -797,14 +805,14 @@ static bool InitializeDefaultShader()
     HRESULT result = D3DCompile(vertexShaderCode, vertexShaderCodeLen, "defaultVS", NULL, NULL, "Main", "vs_5_0", compileFlags, 0, &vertexShaderBlob, &errors);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to compile default vertex shader! Error: %s\n", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
+        DXTRACELOG(RL_LOG_ERROR, "Failed to compile default vertex shader! Error: %s", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
         return false;
     }
 
     result = D3DCompile(fragmentShaderCode, fragmentShaderCodeLen, "defaultFS", NULL, NULL, "Main", "ps_5_0", compileFlags, 0, &fragmentShaderBlob, &errors);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to compile default fragment shader! Error: %s\n", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
+        DXTRACELOG(RL_LOG_ERROR, "Failed to compile default fragment shader! Error: %s", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
         return false;
     }
 
@@ -879,7 +887,7 @@ static bool InitializeDefaultShader()
     result = driver.device->lpVtbl->CreateGraphicsPipelineState(driver.device, &graphicsDesc, &IID_ID3D12PipelineState, (LPVOID*)&driver.defaultPipelineState);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create default graphics pipeline state!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create default graphics pipeline state!");
         success = false;
     }
 
@@ -920,7 +928,7 @@ static unsigned int CreateRenderBuffer(UINT64 vertexBufferSize, UINT64 indexBuff
     HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.vertex);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create vertex buffer resource!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create vertex buffer resource!");
         return 0;
     }
 
@@ -928,7 +936,7 @@ static unsigned int CreateRenderBuffer(UINT64 vertexBufferSize, UINT64 indexBuff
     result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.index);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create index buffer resource!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create index buffer resource!");
         return 0;
     }
 
@@ -1019,7 +1027,7 @@ void rlPushMatrix(void)
 {
     if (dxState.matrices.stackCounter >= RL_MAX_MATRIX_STACK_SIZE)
     {
-        printf("DIRECTX: Matrix stack overflow!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Matrix stack overflow!");
         return;
     }
 
@@ -1304,7 +1312,7 @@ void rlglInit(int width, int height)
 
     if (!CreateDescriptorHeap(&driver.srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, NUM_DESCRIPTORS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
     {
-        printf("DIRECTX: Failed to create SRV descriptor heap!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create SRV descriptor heap!");
         return;
     }
 
@@ -1342,7 +1350,7 @@ void rlglInit(int width, int height)
     DXGI_ADAPTER_DESC1 desc = { 0 };
     if (FAILED(driver.adapter->lpVtbl->GetDesc1(driver.adapter, &desc)))
     {
-        printf("DIRECTX: Failed to retrieve adapter description!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to retrieve adapter description!");
         return;
     }
 
@@ -1352,10 +1360,10 @@ void rlglInit(int width, int height)
     driver.renderBuffers.pool = VectorCreate(sizeof(DXRenderBuffer));
     driver.renderBuffers.index = 1;
 
-    printf("DIRECTX: Initialized DirectX!\n");
+    DXTRACELOG(RL_LOG_INFO, "Initialized DirectX!");
 
     char* driverName = Windows_ToMultiByte(desc.Description);
-    printf("DIRECTX: Driver is %s.\n", driverName);
+    DXTRACELOG(RL_LOG_INFO, "Driver is %s.", driverName);
     RL_FREE(driverName);
 
     // Init default white texture
@@ -1594,7 +1602,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (LPVOID*)&texture.data);
     if (FAILED(result))
     {
-        printf("DIRECTX: Failed to create texture resource!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture resource!");
         return 0;
     }
 
@@ -1615,7 +1623,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     if (FAILED(result))
     {
         DXRELEASE(texture.data);
-        printf("DIRECTX: Failed to create texture upload resource!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture upload resource!");
         return 0;
     }
 
@@ -1625,7 +1633,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     {
         DXRELEASE(texture.data);
         DXRELEASE(texture.upload);
-        printf("DIRECTX: Failed to map upload resource memory!\n");
+        DXTRACELOG(RL_LOG_ERROR, "Failed to map upload resource memory!");
         return 0;
     }
 
@@ -1752,7 +1760,7 @@ void rlPresent()
 {
     if (FAILED(driver.swapChain->lpVtbl->Present(driver.swapChain, 1, 0)))
     {
-        printf("DIRECTX: Failed to present!\n");
+        DXTRACELOG(RL_LOG_WARNING, "Failed to present!");
     }
 
     ResetCommands();
