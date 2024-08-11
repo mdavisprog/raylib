@@ -37,6 +37,7 @@
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
+#include <math.h>
 #include <stdio.h>
 
 //----------------------------------------------------------------------------------
@@ -55,6 +56,18 @@
 
 #define NUM_DESCRIPTORS 100
 #define NUM_TEXTURES NUM_DESCRIPTORS - 2
+
+#ifndef PI
+    #define PI 3.14159265358979323846f
+#endif
+
+#ifndef DEG2RAD
+    #define DEG2RAD (PI/180.0f)
+#endif
+
+#ifndef RAD2DEG
+    #define RAD2DEG (180.0f/PI)
+#endif
 
 //----------------------------------------------------------------------------------
 // Types
@@ -124,8 +137,20 @@ typedef struct {
 } ConstantBuffer;
 
 typedef struct {
+    Matrix modelView;
+    Matrix projection;
+    Matrix transform;
+    Matrix stack[RL_MAX_MATRIX_STACK_SIZE];
+    Matrix *currentMatrix;
+    int stackCounter;
+    int currentMatrixMode;
+    bool transformRequired;
+} DXMatrices;
+
+typedef struct {
     unsigned int defaultTextureId;
     rlRenderBatch defaultBatch;
+    DXMatrices matrices;
 } DXState;
 
 //----------------------------------------------------------------------------------
@@ -934,20 +959,242 @@ static DXRenderBuffer *GetRenderBuffer(unsigned int id)
     return NULL;
 }
 
+static Matrix rlMatrixIdentity(void)
+{
+    Matrix result = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+
+    return result;
+}
+
+// Get two matrix multiplication
+// NOTE: When multiplying matrices... the order matters!
+static Matrix rlMatrixMultiply(Matrix left, Matrix right)
+{
+    Matrix result = { 0 };
+
+    result.m0 = left.m0*right.m0 + left.m1*right.m4 + left.m2*right.m8 + left.m3*right.m12;
+    result.m1 = left.m0*right.m1 + left.m1*right.m5 + left.m2*right.m9 + left.m3*right.m13;
+    result.m2 = left.m0*right.m2 + left.m1*right.m6 + left.m2*right.m10 + left.m3*right.m14;
+    result.m3 = left.m0*right.m3 + left.m1*right.m7 + left.m2*right.m11 + left.m3*right.m15;
+    result.m4 = left.m4*right.m0 + left.m5*right.m4 + left.m6*right.m8 + left.m7*right.m12;
+    result.m5 = left.m4*right.m1 + left.m5*right.m5 + left.m6*right.m9 + left.m7*right.m13;
+    result.m6 = left.m4*right.m2 + left.m5*right.m6 + left.m6*right.m10 + left.m7*right.m14;
+    result.m7 = left.m4*right.m3 + left.m5*right.m7 + left.m6*right.m11 + left.m7*right.m15;
+    result.m8 = left.m8*right.m0 + left.m9*right.m4 + left.m10*right.m8 + left.m11*right.m12;
+    result.m9 = left.m8*right.m1 + left.m9*right.m5 + left.m10*right.m9 + left.m11*right.m13;
+    result.m10 = left.m8*right.m2 + left.m9*right.m6 + left.m10*right.m10 + left.m11*right.m14;
+    result.m11 = left.m8*right.m3 + left.m9*right.m7 + left.m10*right.m11 + left.m11*right.m15;
+    result.m12 = left.m12*right.m0 + left.m13*right.m4 + left.m14*right.m8 + left.m15*right.m12;
+    result.m13 = left.m12*right.m1 + left.m13*right.m5 + left.m14*right.m9 + left.m15*right.m13;
+    result.m14 = left.m12*right.m2 + left.m13*right.m6 + left.m14*right.m10 + left.m15*right.m14;
+    result.m15 = left.m12*right.m3 + left.m13*right.m7 + left.m14*right.m11 + left.m15*right.m15;
+
+    return result;
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
 
-void rlMatrixMode(int mode) {}
-void rlPushMatrix(void) {}
-void rlPopMatrix(void) {}
-void rlLoadIdentity(void) {}
-void rlTranslatef(float x, float y, float z) {}
-void rlRotatef(float angle, float x, float y, float z) {}
-void rlScalef(float x, float y, float z) {}
-void rlMultMatrixf(const float *matf) {}
-void rlFrustum(double left, double right, double bottom, double top, double znear, double zfar) {}
-void rlOrtho(double left, double right, double bottom, double top, double znear, double zfar) {}
+void rlMatrixMode(int mode)
+{
+    if (mode == RL_PROJECTION)
+    {
+        dxState.matrices.currentMatrix = &dxState.matrices.projection;
+    }
+    else if (mode == RL_MODELVIEW)
+    {
+        dxState.matrices.currentMatrix = &dxState.matrices.modelView;
+    }
+
+    dxState.matrices.currentMatrixMode = mode;
+}
+
+void rlPushMatrix(void)
+{
+    if (dxState.matrices.stackCounter >= RL_MAX_MATRIX_STACK_SIZE)
+    {
+        printf("DIRECTX: Matrix stack overflow!\n");
+        return;
+    }
+
+    if (dxState.matrices.currentMatrixMode == RL_MODELVIEW)
+    {
+        dxState.matrices.transformRequired = true;
+        dxState.matrices.currentMatrix = &dxState.matrices.transform;
+    }
+
+    dxState.matrices.stack[dxState.matrices.stackCounter] = *dxState.matrices.currentMatrix;
+    dxState.matrices.stackCounter++;
+}
+
+void rlPopMatrix(void)
+{
+    if (dxState.matrices.stackCounter > 0)
+    {
+        Matrix mat = dxState.matrices.stack[dxState.matrices.stackCounter - 1];
+        *dxState.matrices.currentMatrix = mat;
+        dxState.matrices.stackCounter--;
+    }
+
+    if ((dxState.matrices.stackCounter == 0) && (dxState.matrices.currentMatrixMode  == RL_MODELVIEW))
+    {
+        dxState.matrices.currentMatrix = &dxState.matrices.modelView;
+        dxState.matrices.transformRequired = false;
+    }
+}
+
+void rlLoadIdentity(void)
+{
+    *dxState.matrices.currentMatrix = rlMatrixIdentity();
+}
+
+void rlTranslatef(float x, float y, float z)
+{
+    Matrix matTranslation = {
+        1.0f, 0.0f, 0.0f, x,
+        0.0f, 1.0f, 0.0f, y,
+        0.0f, 0.0f, 1.0f, z,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+
+    // NOTE: We transpose matrix with multiplication order
+    *dxState.matrices.currentMatrix = rlMatrixMultiply(matTranslation, *dxState.matrices.currentMatrix);
+}
+
+void rlRotatef(float angle, float x, float y, float z)
+{
+    Matrix matRotation = rlMatrixIdentity();
+
+    // Axis vector (x, y, z) normalization
+    float lengthSquared = x*x + y*y + z*z;
+    if ((lengthSquared != 1.0f) && (lengthSquared != 0.0f))
+    {
+        float inverseLength = 1.0f/sqrtf(lengthSquared);
+        x *= inverseLength;
+        y *= inverseLength;
+        z *= inverseLength;
+    }
+
+    // Rotation matrix generation
+    float sinres = sinf(DEG2RAD*angle);
+    float cosres = cosf(DEG2RAD*angle);
+    float t = 1.0f - cosres;
+
+    matRotation.m0 = x*x*t + cosres;
+    matRotation.m1 = y*x*t + z*sinres;
+    matRotation.m2 = z*x*t - y*sinres;
+    matRotation.m3 = 0.0f;
+
+    matRotation.m4 = x*y*t - z*sinres;
+    matRotation.m5 = y*y*t + cosres;
+    matRotation.m6 = z*y*t + x*sinres;
+    matRotation.m7 = 0.0f;
+
+    matRotation.m8 = x*z*t + y*sinres;
+    matRotation.m9 = y*z*t - x*sinres;
+    matRotation.m10 = z*z*t + cosres;
+    matRotation.m11 = 0.0f;
+
+    matRotation.m12 = 0.0f;
+    matRotation.m13 = 0.0f;
+    matRotation.m14 = 0.0f;
+    matRotation.m15 = 1.0f;
+
+    // NOTE: We transpose matrix with multiplication order
+    *dxState.matrices.currentMatrix = rlMatrixMultiply(matRotation, *dxState.matrices.currentMatrix);
+}
+
+void rlScalef(float x, float y, float z)
+{
+    Matrix matScale = {
+        x, 0.0f, 0.0f, 0.0f,
+        0.0f, y, 0.0f, 0.0f,
+        0.0f, 0.0f, z, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+
+    // NOTE: We transpose matrix with multiplication order
+    *dxState.matrices.currentMatrix = rlMatrixMultiply(matScale, *dxState.matrices.currentMatrix);
+}
+
+void rlMultMatrixf(const float *matf)
+{
+    // Matrix creation from array
+    Matrix mat = { matf[0], matf[4], matf[8], matf[12],
+                   matf[1], matf[5], matf[9], matf[13],
+                   matf[2], matf[6], matf[10], matf[14],
+                   matf[3], matf[7], matf[11], matf[15] };
+
+    *dxState.matrices.currentMatrix = rlMatrixMultiply(mat, *dxState.matrices.currentMatrix);
+}
+
+void rlFrustum(double left, double right, double bottom, double top, double znear, double zfar)
+{
+    Matrix matFrustum = { 0 };
+
+    float rl = (float)(right - left);
+    float tb = (float)(top - bottom);
+    float fn = (float)(zfar - znear);
+
+    matFrustum.m0 = ((float) znear*2.0f)/rl;
+    matFrustum.m1 = 0.0f;
+    matFrustum.m2 = 0.0f;
+    matFrustum.m3 = 0.0f;
+
+    matFrustum.m4 = 0.0f;
+    matFrustum.m5 = ((float) znear*2.0f)/tb;
+    matFrustum.m6 = 0.0f;
+    matFrustum.m7 = 0.0f;
+
+    matFrustum.m8 = ((float)right + (float)left)/rl;
+    matFrustum.m9 = ((float)top + (float)bottom)/tb;
+    matFrustum.m10 = -((float)zfar + (float)znear)/fn;
+    matFrustum.m11 = -1.0f;
+
+    matFrustum.m12 = 0.0f;
+    matFrustum.m13 = 0.0f;
+    matFrustum.m14 = -((float)zfar*(float)znear*2.0f)/fn;
+    matFrustum.m15 = 0.0f;
+
+    *dxState.matrices.currentMatrix = rlMatrixMultiply(*dxState.matrices.currentMatrix, matFrustum);
+}
+
+void rlOrtho(double left, double right, double bottom, double top, double znear, double zfar)
+{
+    // NOTE: If left-right and top-botton values are equal it could create a division by zero,
+    // response to it is platform/compiler dependant
+    Matrix matOrtho = { 0 };
+
+    float rl = (float)(right - left);
+    float tb = (float)(top - bottom);
+    float fn = (float)(zfar - znear);
+
+    matOrtho.m0 = 2.0f/rl;
+    matOrtho.m1 = 0.0f;
+    matOrtho.m2 = 0.0f;
+    matOrtho.m3 = 0.0f;
+    matOrtho.m4 = 0.0f;
+    matOrtho.m5 = 2.0f/tb;
+    matOrtho.m6 = 0.0f;
+    matOrtho.m7 = 0.0f;
+    matOrtho.m8 = 0.0f;
+    matOrtho.m9 = 0.0f;
+    matOrtho.m10 = -2.0f/fn;
+    matOrtho.m11 = 0.0f;
+    matOrtho.m12 = -((float)left + (float)right)/rl;
+    matOrtho.m13 = -((float)top + (float)bottom)/tb;
+    matOrtho.m14 = -((float)zfar + (float)znear)/fn;
+    matOrtho.m15 = 1.0f;
+
+    *dxState.matrices.currentMatrix = rlMatrixMultiply(*dxState.matrices.currentMatrix, matOrtho);
+}
+
 void rlViewport(int x, int y, int width, int height) {}
 void rlSetClipPlanes(double nearPlane, double farPlane) {}
 double rlGetCullDistanceNear(void) { return 0.0; }
@@ -1115,6 +1362,18 @@ void rlglInit(int width, int height)
     unsigned char pixels[4] = { 255, 255, 255, 255 };   // 1 pixel RGBA (4 bytes)
     dxState.defaultTextureId = rlLoadTexture(pixels, 1, 1, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
     dxState.defaultBatch = rlLoadRenderBatch(RL_DEFAULT_BATCH_BUFFERS, RL_DEFAULT_BATCH_BUFFER_ELEMENTS);
+
+    for (int i = 0; i < RL_MAX_MATRIX_STACK_SIZE; i++)
+    {
+        dxState.matrices.stack[i] = rlMatrixIdentity();
+    }
+
+    dxState.matrices.modelView = rlMatrixIdentity();
+    dxState.matrices.projection = rlMatrixIdentity();
+    dxState.matrices.transform = rlMatrixIdentity();
+    dxState.matrices.currentMatrix = &dxState.matrices.modelView;
+    dxState.matrices.stackCounter = 0;
+    dxState.matrices.currentMatrixMode = RL_MODELVIEW;
 
     UpdateRenderTarget();
 }
