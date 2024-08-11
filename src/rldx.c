@@ -496,6 +496,11 @@ static bool InitializeRootSignature()
     return true;
 }
 
+static void BindRootSignature()
+{
+    driver.commandList->lpVtbl->SetGraphicsRootSignature(driver.commandList, driver.rootSignature);
+}
+
 static bool InitializeFence()
 {
     HRESULT result = driver.device->lpVtbl->CreateFence(driver.device, 0, D3D12_FENCE_FLAG_NONE, &IID_ID3D12Fence, (LPVOID*)&driver.fence);
@@ -1005,6 +1010,16 @@ static Matrix rlMatrixMultiply(Matrix left, Matrix right)
     return result;
 }
 
+static void SetDefaultRenderState()
+{
+    UpdateRenderTarget();
+    BindDefaultPipeline();
+    BindRootSignature();
+
+    ID3D12DescriptorHeap* heaps[] = { driver.srv.descriptorHeap };
+    driver.commandList->lpVtbl->SetDescriptorHeaps(driver.commandList, _countof(heaps), heaps);
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
@@ -1203,7 +1218,19 @@ void rlOrtho(double left, double right, double bottom, double top, double znear,
     *dxState.matrices.currentMatrix = rlMatrixMultiply(*dxState.matrices.currentMatrix, matOrtho);
 }
 
-void rlViewport(int x, int y, int width, int height) {}
+void rlViewport(int x, int y, int width, int height)
+{
+    D3D12_VIEWPORT viewport = { 0 };
+    viewport.TopLeftX = (FLOAT)x;
+    viewport.TopLeftY = (FLOAT)y;
+    viewport.Width = (FLOAT)width;
+    viewport.Height = (FLOAT)height;
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+
+    driver.commandList->lpVtbl->RSSetViewports(driver.commandList, 1, &viewport);
+}
+
 void rlSetClipPlanes(double nearPlane, double farPlane) {}
 double rlGetCullDistanceNear(void) { return 0.0; }
 double rlGetCullDistanceFar(void) { return 0.0; }
@@ -1345,8 +1372,6 @@ void rlglInit(int width, int height)
         return;
     }
 
-    BindDefaultPipeline();
-
     DXGI_ADAPTER_DESC1 desc = { 0 };
     if (FAILED(driver.adapter->lpVtbl->GetDesc1(driver.adapter, &desc)))
     {
@@ -1383,7 +1408,7 @@ void rlglInit(int width, int height)
     dxState.matrices.stackCounter = 0;
     dxState.matrices.currentMatrixMode = RL_MODELVIEW;
 
-    UpdateRenderTarget();
+    SetDefaultRenderState();
 }
 
 void rlglClose(void)
@@ -1772,6 +1797,5 @@ void rlPresent()
 #endif
 
     // Prepare render target for next frame
-    UpdateRenderTarget();
-    BindDefaultPipeline();
+    SetDefaultRenderState();
 }
