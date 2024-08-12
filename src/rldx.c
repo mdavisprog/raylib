@@ -1969,13 +1969,34 @@ unsigned int rlGetShaderBufferSize(unsigned int id) { return 0; }
 void rlBindImageTexture(unsigned int id, unsigned int index, int format, bool readonly) {}
 
 // Matrix state management
-Matrix rlGetMatrixModelview(void) { Matrix result = { 0 }; return result; }
-Matrix rlGetMatrixProjection(void) { Matrix result = { 0 }; return result; }
-Matrix rlGetMatrixTransform(void) { Matrix result = { 0 }; return result; }
+Matrix rlGetMatrixModelview(void)
+{
+    return dxState.matrices.modelView;
+}
+
+Matrix rlGetMatrixProjection(void)
+{
+    return dxState.matrices.projection;
+}
+
+Matrix rlGetMatrixTransform(void)
+{
+    return dxState.matrices.transform;
+}
+
 Matrix rlGetMatrixProjectionStereo(int eye) { Matrix result = { 0 }; return result; }
 Matrix rlGetMatrixViewOffsetStereo(int eye) { Matrix result = { 0 }; return result; }
-void rlSetMatrixProjection(Matrix proj) {}
-void rlSetMatrixModelview(Matrix view) {}
+
+void rlSetMatrixProjection(Matrix proj)
+{
+    dxState.matrices.projection = proj;
+}
+
+void rlSetMatrixModelview(Matrix view)
+{
+    dxState.matrices.modelView = view;
+}
+
 void rlSetMatrixProjectionStereo(Matrix right, Matrix left) {}
 void rlSetMatrixViewOffsetStereo(Matrix right, Matrix left) {}
 
