@@ -164,7 +164,12 @@ typedef struct {
 typedef struct {
     unsigned int defaultTextureId;
     rlRenderBatch defaultBatch;
+    rlRenderBatch *currentBatch;
     DXMatrices matrices;
+    int vertexCounter;
+    float texcoordx, texcoordy;
+    float normalx, normaly, normalz;
+    unsigned char colorr, colorg, colorb, colora;
 } DXState;
 
 //----------------------------------------------------------------------------------
@@ -1238,16 +1243,156 @@ double rlGetCullDistanceFar(void) { return 0.0; }
 //------------------------------------------------------------------------------------
 // Functions Declaration - Vertex level operations
 //------------------------------------------------------------------------------------
-void rlBegin(int mode) {}
-void rlEnd(void) {}
-void rlVertex2i(int x, int y) {}
-void rlVertex2f(float x, float y) {}
-void rlVertex3f(float x, float y, float z) {}
-void rlTexCoord2f(float x, float y) {}
-void rlNormal3f(float x, float y, float z) {}
-void rlColor4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a) {}
-void rlColor3f(float x, float y, float z) {}
-void rlColor4f(float x, float y, float z, float w) {}
+void rlBegin(int mode)
+{
+    if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode != mode)
+    {
+        if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount > 0)
+        {
+            if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode == RL_LINES) dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment = ((dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount < 4)? dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount : dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount%4);
+            else if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode == RL_TRIANGLES) dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment = ((dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount < 4)? 1 : (4 - (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount%4)));
+            else dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment = 0;
+
+            if (!rlCheckRenderBatchLimit(dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment))
+            {
+                dxState.vertexCounter += dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment;
+                dxState.currentBatch->drawCounter++;
+            }
+        }
+
+        if (dxState.currentBatch->drawCounter >= RL_DEFAULT_BATCH_DRAWCALLS) rlDrawRenderBatch(dxState.currentBatch);
+
+        dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode = mode;
+        dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount = 0;
+        dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].textureId = dxState.defaultTextureId;
+    }
+}
+
+void rlEnd(void)
+{
+    dxState.currentBatch->currentDepth += (1.0f/20000.0f);
+}
+
+void rlVertex2i(int x, int y)
+{
+    rlVertex3f((float)x, (float)y, dxState.currentBatch->currentDepth);
+}
+
+void rlVertex2f(float x, float y)
+{
+    rlVertex3f(x, y, dxState.currentBatch->currentDepth);
+}
+
+void rlVertex3f(float x, float y, float z)
+{
+    float tx = x;
+    float ty = y;
+    float tz = z;
+
+    // Transform provided vector if required
+    if (dxState.matrices.transformRequired)
+    {
+        tx = dxState.matrices.transform.m0*x + dxState.matrices.transform.m4*y + dxState.matrices.transform.m8*z + dxState.matrices.transform.m12;
+        ty = dxState.matrices.transform.m1*x + dxState.matrices.transform.m5*y + dxState.matrices.transform.m9*z + dxState.matrices.transform.m13;
+        tz = dxState.matrices.transform.m2*x + dxState.matrices.transform.m6*y + dxState.matrices.transform.m10*z + dxState.matrices.transform.m14;
+    }
+
+    // WARNING: We can't break primitives when launching a new batch.
+    // RL_LINES comes in pairs, RL_TRIANGLES come in groups of 3 vertices and RL_QUADS come in groups of 4 vertices.
+    // We must check current draw.mode when a new vertex is required and finish the batch only if the draw.mode draw.vertexCount is %2, %3 or %4
+    if (dxState.vertexCounter > (dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].elementCount*4 - 4))
+    {
+        if ((dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode == RL_LINES) &&
+            (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount%2 == 0))
+        {
+            // Reached the maximum number of vertices for RL_LINES drawing
+            // Launch a draw call but keep current state for next vertices comming
+            // NOTE: We add +1 vertex to the check for security
+            rlCheckRenderBatchLimit(2 + 1);
+        }
+        else if ((dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode == RL_TRIANGLES) &&
+            (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount%3 == 0))
+        {
+            rlCheckRenderBatchLimit(3 + 1);
+        }
+        else if ((dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode == RL_QUADS) &&
+            (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount%4 == 0))
+        {
+            rlCheckRenderBatchLimit(4 + 1);
+        }
+    }
+
+    // Add vertices
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].vertices[3*dxState.vertexCounter] = tx;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].vertices[3*dxState.vertexCounter + 1] = ty;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].vertices[3*dxState.vertexCounter + 2] = tz;
+
+    // Add current texcoord
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].texcoords[2*dxState.vertexCounter] = dxState.texcoordx;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].texcoords[2*dxState.vertexCounter + 1] = dxState.texcoordy;
+
+    // Add current normal
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].normals[3*dxState.vertexCounter] = dxState.normalx;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].normals[3*dxState.vertexCounter + 1] = dxState.normaly;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].normals[3*dxState.vertexCounter + 2] = dxState.normalz;
+
+    // Add current color
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].colors[4*dxState.vertexCounter] = dxState.colorr;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].colors[4*dxState.vertexCounter + 1] = dxState.colorg;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].colors[4*dxState.vertexCounter + 2] = dxState.colorb;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].colors[4*dxState.vertexCounter + 3] = dxState.colora;
+
+    dxState.vertexCounter++;
+    dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount++;
+}
+
+void rlTexCoord2f(float x, float y)
+{
+    dxState.texcoordx = x;
+    dxState.texcoordy = y;
+}
+
+void rlNormal3f(float x, float y, float z)
+{
+    float normalx = x;
+    float normaly = y;
+    float normalz = z;
+    if (dxState.matrices.transformRequired)
+    {
+        normalx = dxState.matrices.transform.m0*x + dxState.matrices.transform.m4*y + dxState.matrices.transform.m8*z;
+        normaly = dxState.matrices.transform.m1*x + dxState.matrices.transform.m5*y + dxState.matrices.transform.m9*z;
+        normalz = dxState.matrices.transform.m2*x + dxState.matrices.transform.m6*y + dxState.matrices.transform.m10*z;
+    }
+    float length = sqrtf(normalx*normalx + normaly*normaly + normalz*normalz);
+    if (length != 0.0f)
+    {
+        float ilength = 1.0f/length;
+        normalx *= ilength;
+        normaly *= ilength;
+        normalz *= ilength;
+    }
+    dxState.normalx = normalx;
+    dxState.normaly = normaly;
+    dxState.normalz = normalz;
+}
+
+void rlColor4ub(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
+{
+    dxState.colorr = r;
+    dxState.colorg = g;
+    dxState.colorb = b;
+    dxState.colora = a;
+}
+
+void rlColor3f(float x, float y, float z)
+{
+    rlColor4ub((unsigned char)(x*255.0f), (unsigned char)(y*255.0f), (unsigned char)(z*255.0f), 255);
+}
+
+void rlColor4f(float r, float g, float b, float a)
+{
+    rlColor4ub((unsigned char)(r*255.0f), (unsigned char)(g*255.0f), (unsigned char)(b*255.0f), (unsigned char)(a*255.0f));
+}
 
 //------------------------------------------------------------------------------------
 // Functions Declaration - OpenGL style functions (common to 1.1, 3.3+, ES2)
@@ -1395,6 +1540,7 @@ void rlglInit(int width, int height)
     unsigned char pixels[4] = { 255, 255, 255, 255 };   // 1 pixel RGBA (4 bytes)
     dxState.defaultTextureId = rlLoadTexture(pixels, 1, 1, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8, 1);
     dxState.defaultBatch = rlLoadRenderBatch(RL_DEFAULT_BATCH_BUFFERS, RL_DEFAULT_BATCH_BUFFER_ELEMENTS);
+    dxState.currentBatch = &dxState.defaultBatch;
 
     for (int i = 0; i < RL_MAX_MATRIX_STACK_SIZE; i++)
     {
@@ -1555,10 +1701,7 @@ void rlUnloadRenderBatch(rlRenderBatch batch)
     RL_FREE(batch.draws);
 }
 
-void rlDrawRenderBatch(rlRenderBatch *batch) {}
-void rlSetRenderBatchActive(rlRenderBatch *batch) {}
-
-void rlDrawRenderBatchActive(void)
+void rlDrawRenderBatch(rlRenderBatch *batch)
 {
     // TODO: Enable when graphics pipeline states are implemented.
     // D3D12_GPU_DESCRIPTOR_HANDLE constantBufferOffset = GPUOffset(&driver.srv, constantBufferIndex);
@@ -1575,11 +1718,70 @@ void rlDrawRenderBatchActive(void)
     barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
 
+    dxState.vertexCounter = 0;
+    batch->currentDepth = -1.0f;
+
+    for (int i = 0; i < RL_DEFAULT_BATCH_DRAWCALLS; i++)
+    {
+        batch->draws[i].mode = RL_QUADS;
+        batch->draws[i].vertexCount = 0;
+        batch->draws[i].textureId = dxState.defaultTextureId;
+    }
+
+    batch->drawCounter = 1;
+    batch->currentBuffer++;
+    
+    if (batch->currentBuffer >= batch->bufferCount)
+    {
+        batch->currentBuffer = 0;
+    }
+
     ExecuteCommands();
+    // TODO: Try only executing and wait before presenting.
     WaitForPreviousFrame();
 }
 
-bool rlCheckRenderBatchLimit(int vCount) { return false; }
+void rlSetRenderBatchActive(rlRenderBatch *batch)
+{
+    rlDrawRenderBatch(dxState.currentBatch);
+
+    if (batch != NULL)
+    {
+        dxState.currentBatch = batch;
+    }
+    else
+    {
+        dxState.currentBatch = &dxState.defaultBatch;
+    }
+}
+
+void rlDrawRenderBatchActive(void)
+{
+    rlDrawRenderBatch(dxState.currentBatch);
+}
+
+bool rlCheckRenderBatchLimit(int vCount)
+{
+    bool overflow = false;
+
+    if ((dxState.vertexCounter + vCount) >=
+        (dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].elementCount*4))
+    {
+        overflow = true;
+
+        // Store current primitive drawing mode and texture id
+        int currentMode = dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode;
+        int currentTexture = dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].textureId;
+
+        rlDrawRenderBatch(dxState.currentBatch);    // NOTE: Stereo rendering is checked inside
+
+        // Restore state of last batch so we can continue adding vertices
+        dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode = currentMode;
+        dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].textureId = currentTexture;
+    }
+
+    return overflow;
+}
 
 void rlSetTexture(unsigned int id) {}
 
