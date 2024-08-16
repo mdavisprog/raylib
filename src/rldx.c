@@ -106,10 +106,16 @@ typedef struct {
 } DXTexture;
 
 typedef struct {
+    ID3D12Resource *buffer;
+    D3D12_VERTEX_BUFFER_VIEW view;
+} DXVertexBuffer;
+
+typedef struct {
     unsigned int id;
-    ID3D12Resource *vertex;
+    DXVertexBuffer vertex;
+    DXVertexBuffer texcoord;
+    DXVertexBuffer color;
     ID3D12Resource *index;
-    D3D12_VERTEX_BUFFER_VIEW vertexView;
     D3D12_INDEX_BUFFER_VIEW indexView;
 } DXRenderBuffer;
 
@@ -771,6 +777,7 @@ static bool InitializeDefaultShader()
     "{                                      \n"
     "   float4 position : SV_POSITION;      \n"
     "   float2 uv : TEXCOORD;               \n"
+    "   float4 color : COLOR;               \n"
     "};                                     \n"
 
     "cbuffer ConstantBuffer : register(b0)  \n"
@@ -779,12 +786,13 @@ static bool InitializeDefaultShader()
     "   int pad[6];                         \n"
     "}                                      \n"
 
-    "PSInput Main(float4 position : POSITION, float2 uv : TEXCOORD)     \n"
-    "{                                                                  \n"
-    "   PSInput result;                                                 \n"
-    "   result.position = mul(mvp, float4(position.xyz, 1.0));          \n"
-    "   result.uv = uv;                                                 \n"
-    "   return result;                                                  \n"
+    "PSInput Main(float4 position : POSITION, float2 uv : TEXCOORD, float4 color : COLOR)   \n"
+    "{                                                                                      \n"
+    "   PSInput result;                                                                     \n"
+    "   result.position = mul(mvp, float4(position.xyz, 1.0));                              \n"
+    "   result.uv = uv;                                                                     \n"
+    "   result.color = color;                                                               \n"
+    "   return result;                                                                      \n"
     "}";
 
     const char *fragmentShaderCode =
@@ -792,12 +800,13 @@ static bool InitializeDefaultShader()
     "{                                      \n"
     "   float4 position : SV_POSITION;      \n"
     "   float2 uv : TEXCOORD;               \n"
+    "   float4 color : COLOR;               \n"
     "};                                     \n"
     "Texture2D g_Texture : register(t0);    \n"
     "SamplerState g_Sampler : register(s0); \n"
     "float4 Main(PSInput input) : SV_TARGET \n"
     "{                                      \n"
-    "   return g_Texture.Sample(g_Sampler, input.uv); \n"
+    "   return g_Texture.Sample(g_Sampler, input.uv) * input.color; \n"
     "}";
 
     const size_t vertexShaderCodeLen = strlen(vertexShaderCode);
@@ -826,7 +835,7 @@ static bool InitializeDefaultShader()
         return false;
     }
 
-    D3D12_INPUT_ELEMENT_DESC elements[2] = { {0}, {0} };
+    D3D12_INPUT_ELEMENT_DESC elements[3] = { {0}, {0}, {0} };
     elements[0].SemanticName = "POSITION";
     elements[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
     elements[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
@@ -836,6 +845,13 @@ static bool InitializeDefaultShader()
     elements[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
     elements[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
     elements[1].Format = DXGI_FORMAT_R32G32_FLOAT;
+    elements[1].InputSlot = 1;
+
+    elements[2].SemanticName = "COLOR";
+    elements[2].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    elements[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+    elements[2].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    elements[2].InputSlot = 2;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = { 0 };
     graphicsDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
@@ -880,10 +896,10 @@ static bool InitializeDefaultShader()
     graphicsDesc.PS.pShaderBytecode = fragmentShaderBlob->lpVtbl->GetBufferPointer(fragmentShaderBlob);
     graphicsDesc.PS.BytecodeLength = fragmentShaderBlob->lpVtbl->GetBufferSize(fragmentShaderBlob);
 
-    graphicsDesc.DepthStencilState.DepthEnable = TRUE;
+    graphicsDesc.DepthStencilState.DepthEnable = FALSE;
     graphicsDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     graphicsDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    graphicsDesc.DepthStencilState.StencilEnable = TRUE;
+    graphicsDesc.DepthStencilState.StencilEnable = FALSE;
     graphicsDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
     graphicsDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
     graphicsDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
@@ -912,7 +928,11 @@ static void BindDefaultPipeline()
     driver.commandList->lpVtbl->SetPipelineState(driver.commandList, driver.defaultPipelineState);
 }
 
-static unsigned int CreateRenderBuffer(UINT64 vertexBufferSize, UINT64 indexBufferSize, UINT stride)
+static unsigned int CreateRenderBuffer(
+    UINT64 vertexBufferSize, UINT vertexBufferStride,
+    UINT64 texcoordBufferSize, UINT texcoordBufferStride,
+    UINT64 colorBufferSize, UINT colorBufferStride,
+    UINT64 indexBufferSize)
 {
     D3D12_HEAP_PROPERTIES heap = { 0 };
     heap.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -935,10 +955,26 @@ static unsigned int CreateRenderBuffer(UINT64 vertexBufferSize, UINT64 indexBuff
     resource.Flags = D3D12_RESOURCE_FLAG_NONE;
 
     DXRenderBuffer buffer = { 0 };
-    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.vertex);
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.vertex.buffer);
     if (FAILED(result))
     {
         DXTRACELOG(RL_LOG_ERROR, "Failed to create vertex buffer resource!");
+        return 0;
+    }
+
+    resource.Width = texcoordBufferSize;
+    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.texcoord.buffer);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texcoord buffer resource!");
+        return 0;
+    }
+
+    resource.Width = colorBufferSize;
+    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.color.buffer);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create color buffer resource!");
         return 0;
     }
 
@@ -950,8 +986,14 @@ static unsigned int CreateRenderBuffer(UINT64 vertexBufferSize, UINT64 indexBuff
         return 0;
     }
 
-    buffer.vertexView.BufferLocation = buffer.vertex->lpVtbl->GetGPUVirtualAddress(buffer.vertex);
-    buffer.vertexView.StrideInBytes = stride;
+    buffer.vertex.view.BufferLocation = buffer.vertex.buffer->lpVtbl->GetGPUVirtualAddress(buffer.vertex.buffer);
+    buffer.vertex.view.StrideInBytes = vertexBufferStride;
+
+    buffer.texcoord.view.BufferLocation = buffer.texcoord.buffer->lpVtbl->GetGPUVirtualAddress(buffer.texcoord.buffer);
+    buffer.texcoord.view.StrideInBytes = texcoordBufferStride;
+
+    buffer.color.view.BufferLocation = buffer.color.buffer->lpVtbl->GetGPUVirtualAddress(buffer.color.buffer);
+    buffer.color.view.StrideInBytes = colorBufferStride;
 
     buffer.indexView.BufferLocation = buffer.index->lpVtbl->GetGPUVirtualAddress(buffer.index);
     buffer.indexView.Format = DXGI_FORMAT_R32_UINT;
@@ -1572,7 +1614,9 @@ void rlglClose(void)
     for (size_t i = 0; i < driver.renderBuffers.pool.length; i++)
     {
         DXRenderBuffer* renderBuffer = (DXRenderBuffer*)VectorGet(&driver.renderBuffers.pool, i);
-        DXRELEASE(renderBuffer->vertex);
+        DXRELEASE(renderBuffer->vertex.buffer);
+        DXRELEASE(renderBuffer->texcoord.buffer);
+        DXRELEASE(renderBuffer->color.buffer);
         DXRELEASE(renderBuffer->index);
     }
     VectorDestroy(&driver.renderBuffers.pool);
@@ -1653,7 +1697,22 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
 
     for (int i = 0; i < numBuffers; i++)
     {
-        batch.vertexBuffer[i].vaoId = CreateRenderBuffer(verticesSize + texcoordsSize + colorsSize, indicesSize, (UINT)(vertexSize + texcoordSize + colorSize));
+        batch.vertexBuffer[i].vaoId = CreateRenderBuffer(verticesSize, 3 * sizeof(float), texcoordsSize, 2 * sizeof(float), colorsSize, 4 * sizeof(unsigned char), indicesSize);
+        DXRenderBuffer *renderBuffer = GetRenderBuffer(batch.vertexBuffer[i].vaoId);
+
+        unsigned char *indexData = NULL;
+        D3D12_RANGE range = { 0 };
+
+        HRESULT result = renderBuffer->index->lpVtbl->Map(renderBuffer->index, 0, &range, (LPVOID*)&indexData);
+        if (FAILED(result))
+        {
+            DXTRACELOG(RL_LOG_WARNING, "Failed to map resource for upload!");
+        }
+
+        memcpy(indexData, batch.vertexBuffer[i].indices, indicesSize);
+
+        renderBuffer->index->lpVtbl->Unmap(renderBuffer->index, 0, NULL);
+        renderBuffer->indexView.SizeInBytes = (UINT)indicesSize;
     }
 
     // Init draw calls tracking system
@@ -1693,7 +1752,9 @@ void rlUnloadRenderBatch(rlRenderBatch batch)
             continue;
         }
 
-        DXRELEASE(renderBuffer->vertex);
+        DXRELEASE(renderBuffer->vertex.buffer);
+        DXRELEASE(renderBuffer->texcoord.buffer);
+        DXRELEASE(renderBuffer->color.buffer);
         DXRELEASE(renderBuffer->index);
     }
 
