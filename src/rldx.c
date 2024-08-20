@@ -125,6 +125,11 @@ typedef struct {
 } DescriptorHeap;
 
 typedef struct {
+    DescriptorHeap descriptor;
+    ID3D12Resource *resource;
+} DepthStencil;
+
+typedef struct {
     ID3D12Device9 *device;
     IDXGIFactory7 *factory;
     IDXGIAdapter1 *adapter;
@@ -145,6 +150,7 @@ typedef struct {
     ObjectPool textures;
     ObjectPool renderBuffers;
     ID3D12PipelineState *defaultPipelineState;
+    DepthStencil depthStencil;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
 #endif
@@ -661,6 +667,57 @@ static bool InitializeConstantBuffer()
     return true;
 }
 
+static bool InitializeDepthStencil(int width, int height)
+{
+    if (!CreateDescriptorHeap(&driver.depthStencil.descriptor, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create depth stencil descriptor heap!");
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resource = { 0 };
+    resource.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resource.Alignment = 0;
+    resource.Width = (UINT64)width;
+    resource.Height = (UINT64)height;
+    resource.DepthOrArraySize = 1;
+    resource.MipLevels = 0;
+    resource.Format = DXGI_FORMAT_D32_FLOAT;
+    resource.SampleDesc.Count = 1;
+    resource.SampleDesc.Quality = 0;
+    resource.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resource.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = { 0 };
+    dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+
+    D3D12_CLEAR_VALUE clearValue = { 0 };
+    clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+    clearValue.DepthStencil.Depth = 1.0f;
+    clearValue.DepthStencil.Stencil = 0;
+
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue, &IID_ID3D12Resource, (LPVOID*)&driver.depthStencil.resource);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create depth stencil resource!");
+        return false;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE offset = CPUOffset(&driver.depthStencil.descriptor, 0);
+    driver.device->lpVtbl->CreateDepthStencilView(driver.device, driver.depthStencil.resource, &dsvDesc, offset);
+
+    return true;
+}
+
 #if defined(DIRECTX_INFOQUEUE)
 static bool InitializeInfoQueue()
 {
@@ -767,7 +824,8 @@ static void UpdateRenderTarget()
     driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CPUOffset(&driver.rtv, driver.frameIndex);
-    driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, NULL);
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUOffset(&driver.depthStencil.descriptor, 0);
+    driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, &dsvHandle);
 }
 
 static bool InitializeDefaultShader()
@@ -1549,6 +1607,11 @@ void rlglInit(int width, int height)
         return;
     }
 
+    if (!InitializeDepthStencil(width, height))
+    {
+        return;
+    }
+
     if (!InitializeConstantBuffer())
     {
         return;
@@ -1624,6 +1687,8 @@ void rlglClose(void)
     DXRELEASE(driver.constantBuffer);
     DXRELEASE(driver.renderTargets[0]);
     DXRELEASE(driver.renderTargets[1]);
+    DXRELEASE(driver.depthStencil.resource);
+    DXRELEASE(driver.depthStencil.descriptor.descriptorHeap);
     DXRELEASE(driver.swapChain);
     DXRELEASE(driver.fence);
     DXRELEASE(driver.rootSignature);
