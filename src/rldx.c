@@ -101,8 +101,11 @@ typedef struct {
 
 typedef struct {
     unsigned int id;
+    unsigned int offset;
     ID3D12Resource *data;
     ID3D12Resource *upload;
+    int width;
+    int height;
 } DXTexture;
 
 typedef struct {
@@ -1123,6 +1126,27 @@ static void SetDefaultRenderState()
 
     ID3D12DescriptorHeap* heaps[] = { driver.srv.descriptorHeap };
     driver.commandList->lpVtbl->SetDescriptorHeaps(driver.commandList, _countof(heaps), heaps);
+
+static DXTexture *GetTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.textures.pool.length; i++)
+    {
+        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
+
+        if (texture->id == id)
+        {
+            return texture;
+        }
+    }
+
+    return NULL;
+}
+
+static void BindTexture(unsigned int id)
+{
+    DXTexture *texture = GetTexture(id);
+    D3D12_GPU_DESCRIPTOR_HANDLE offset = GPUOffset(&driver.srv, texture->offset);
+    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, offset);
 }
 
 //----------------------------------------------------------------------------------
@@ -1332,7 +1356,6 @@ void rlViewport(int x, int y, int width, int height)
     viewport.Height = (FLOAT)height;
     viewport.MinDepth = 0.0f;
     viewport.MaxDepth = 1.0f;
-
     driver.commandList->lpVtbl->RSSetViewports(driver.commandList, 1, &viewport);
 }
 
@@ -1428,8 +1451,12 @@ void rlVertex3f(float x, float y, float z)
     dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].vertices[3*dxState.vertexCounter + 2] = tz;
 
     // Add current texcoord
-    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].texcoords[2*dxState.vertexCounter] = dxState.texcoordx;
-    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].texcoords[2*dxState.vertexCounter + 1] = dxState.texcoordy;
+    const int drawCounter = dxState.currentBatch->drawCounter;
+    DXTexture *texture = GetTexture(dxState.currentBatch->draws[drawCounter].textureId);
+    const float texcoordx = (float)dxState.texcoordx / (float)texture->width;
+    const float texcoordy = (float)dxState.texcoordy / (float)texture->height;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].texcoords[2*dxState.vertexCounter] = texcoordx;
+    dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].texcoords[2*dxState.vertexCounter + 1] = texcoordy;
 
     // Add current normal
     dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].normals[3*dxState.vertexCounter] = dxState.normalx;
@@ -2044,6 +2071,9 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     D3D12_CPU_DESCRIPTOR_HANDLE cpuOffset = CPUOffset(&driver.srv, index);
     driver.device->lpVtbl->CreateShaderResourceView(driver.device, texture.data, &shaderViewDesc, cpuOffset);
     texture.id = driver.textures.index++;
+    texture.offset = index;
+    texture.width = width;
+    texture.height = height;
 
     VectorPush(&driver.textures.pool, &texture);
 
