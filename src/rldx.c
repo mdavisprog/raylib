@@ -185,6 +185,9 @@ typedef struct {
     float texcoordx, texcoordy;
     float normalx, normaly, normalz;
     unsigned char colorr, colorg, colorb, colora;
+    ConstantBuffer constantBuffer;
+    int width;
+    int height;
 } DXState;
 
 //----------------------------------------------------------------------------------
@@ -1080,6 +1083,26 @@ static DXRenderBuffer *GetRenderBuffer(unsigned int id)
     return NULL;
 }
 
+static bool UploadData(DXVertexBuffer *buffer, void *data, size_t size)
+{
+    unsigned char *bufferData = NULL;
+    D3D12_RANGE range = { 0 };
+
+    HRESULT result = buffer->buffer->lpVtbl->Map(buffer->buffer, 0, &range, (LPVOID*)&bufferData);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_WARNING, "Failed to map resource for upload!");
+        return false;
+    }
+
+    memcpy(bufferData, data, size);
+
+    buffer->buffer->lpVtbl->Unmap(buffer->buffer, 0, NULL);
+    buffer->view.SizeInBytes = (UINT)size;
+
+    return true;
+}
+
 static Matrix rlMatrixIdentity(void)
 {
     Matrix result = {
@@ -1118,14 +1141,32 @@ static Matrix rlMatrixMultiply(Matrix left, Matrix right)
     return result;
 }
 
-static void SetDefaultRenderState()
+static Matrix rlMatrixTranspose(Matrix mat)
 {
-    UpdateRenderTarget();
-    BindDefaultPipeline();
-    BindRootSignature();
+    Matrix result = { 0 };
 
-    ID3D12DescriptorHeap* heaps[] = { driver.srv.descriptorHeap };
-    driver.commandList->lpVtbl->SetDescriptorHeaps(driver.commandList, _countof(heaps), heaps);
+    result.m0 = mat.m0;
+    result.m1 = mat.m4;
+    result.m2 = mat.m8;
+    result.m3 = mat.m12;
+
+    result.m4 = mat.m1;
+    result.m5 = mat.m5;
+    result.m6 = mat.m9;
+    result.m7 = mat.m13;
+
+    result.m8 = mat.m2;
+    result.m9 = mat.m6;
+    result.m10 = mat.m10;
+    result.m11 = mat.m14;
+
+    result.m12 = mat.m3;
+    result.m13 = mat.m7;
+    result.m14 = mat.m11;
+    result.m15 = mat.m15;
+
+    return result;
+}
 
 static DXTexture *GetTexture(unsigned int id)
 {
@@ -1323,25 +1364,31 @@ void rlOrtho(double left, double right, double bottom, double top, double znear,
     // response to it is platform/compiler dependant
     Matrix matOrtho = { 0 };
 
-    float rl = (float)(right - left);
-    float tb = (float)(top - bottom);
-    float fn = (float)(zfar - znear);
+    const float l = (float)left;
+    const float r = (float)right;
+    const float t = (float)top;
+    const float b = (float)bottom;
+    const float n = (float)znear;
+    const float f = (float)zfar;
 
-    matOrtho.m0 = 2.0f/rl;
+    matOrtho.m0 = 2.0f / (r - l);
     matOrtho.m1 = 0.0f;
     matOrtho.m2 = 0.0f;
     matOrtho.m3 = 0.0f;
+
     matOrtho.m4 = 0.0f;
-    matOrtho.m5 = 2.0f/tb;
+    matOrtho.m5 = 2.0f / (t - b);
     matOrtho.m6 = 0.0f;
     matOrtho.m7 = 0.0f;
+
     matOrtho.m8 = 0.0f;
     matOrtho.m9 = 0.0f;
-    matOrtho.m10 = -2.0f/fn;
+    matOrtho.m10 = 1.0f / (n - f);
     matOrtho.m11 = 0.0f;
-    matOrtho.m12 = -((float)left + (float)right)/rl;
-    matOrtho.m13 = -((float)top + (float)bottom)/tb;
-    matOrtho.m14 = -((float)zfar + (float)znear)/fn;
+
+    matOrtho.m12 = (l + r) / (l - r);
+    matOrtho.m13 = (b + t) / (b - t);
+    matOrtho.m14 = n / (n - f);
     matOrtho.m15 = 1.0f;
 
     *dxState.matrices.currentMatrix = rlMatrixMultiply(*dxState.matrices.currentMatrix, matOrtho);
@@ -1571,7 +1618,17 @@ void rlColorMask(bool r, bool g, bool b, bool a) {}
 void rlSetCullFace(int mode) {}
 void rlEnableScissorTest(void) {}
 void rlDisableScissorTest(void) {}
-void rlScissor(int x, int y, int width, int height) {}
+
+void rlScissor(int x, int y, int width, int height)
+{
+    D3D12_RECT scissor = { 0 };
+    scissor.left = x;
+    scissor.top = y;
+    scissor.right = x + width;
+    scissor.bottom = y + height;
+    driver.commandList->lpVtbl->RSSetScissorRects(driver.commandList, 1, &scissor);
+}
+
 void rlEnableWireMode(void) {}
 void rlEnablePointMode(void) {}
 void rlDisableWireMode(void) {}
@@ -1686,7 +1743,12 @@ void rlglInit(int width, int height)
     dxState.matrices.stackCounter = 0;
     dxState.matrices.currentMatrixMode = RL_MODELVIEW;
 
-    SetDefaultRenderState();
+    dxState.width = width;
+    dxState.height = height;
+
+    UpdateRenderTarget();
+    rlViewport(0, 0, width, height);
+    rlScissor(0, 0, width, height);
 }
 
 void rlglClose(void)
@@ -1856,20 +1918,71 @@ void rlUnloadRenderBatch(rlRenderBatch batch)
 
 void rlDrawRenderBatch(rlRenderBatch *batch)
 {
-    // TODO: Enable when graphics pipeline states are implemented.
-    // D3D12_GPU_DESCRIPTOR_HANDLE constantBufferOffset = GPUOffset(&driver.srv, constantBufferIndex);
-    // driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, constantBufferOffset);
+    rlVertexBuffer *vertexBuffer = &batch->vertexBuffer[batch->currentBuffer];
+    DXRenderBuffer *renderBuffer = GetRenderBuffer(vertexBuffer->vaoId);
+
+    if (dxState.vertexCounter > 0)
+    {
+        UploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float));
+        UploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float));
+        UploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char));
+    }
+
+    BindDefaultPipeline();
+    BindRootSignature();
+
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = CPUOffset(&driver.depthStencil.descriptor, 0);
+    driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
+
+    ID3D12DescriptorHeap* heaps[] = { driver.srv.descriptorHeap };
+    driver.commandList->lpVtbl->SetDescriptorHeaps(driver.commandList, _countof(heaps), heaps);
+
+    D3D12_GPU_DESCRIPTOR_HANDLE constantBufferOffset = GPUOffset(&driver.srv, constantBufferIndex);
+    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 1, constantBufferOffset);
+
+    Matrix matProjection = dxState.matrices.projection;
+    Matrix matModelView = dxState.matrices.modelView;
+    Matrix mvp = rlMatrixMultiply(matModelView, matProjection);
+    dxState.constantBuffer.mpv = rlMatrixTranspose(mvp);
+    memcpy(driver.constantBufferPtr, (LPVOID)&dxState.constantBuffer, sizeof(ConstantBuffer));
 
     driver.commandList->lpVtbl->IASetPrimitiveTopology(driver.commandList, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    D3D12_RESOURCE_BARRIER barrier = { 0 };
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.pResource = driver.renderTargets[driver.frameIndex];
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+    if (dxState.vertexCounter > 0)
+    {
+        D3D12_VERTEX_BUFFER_VIEW views[3] = { renderBuffer->vertex.view, renderBuffer->texcoord.view, renderBuffer->color.view };
+        driver.commandList->lpVtbl->IASetVertexBuffers(driver.commandList, 0, _countof(views), views);
+        driver.commandList->lpVtbl->IASetIndexBuffer(driver.commandList, &renderBuffer->indexView);
+    }
+
+    int eyeCount = 1;
+    for (int eye = 0; eye < eyeCount; eye++)
+    {
+        if (dxState.vertexCounter > 0)
+        {
+            BindTexture(dxState.defaultTextureId);
+
+            int indexOffset = 0;
+            for (int i = 0, vertexOffset = 0; i < batch->drawCounter; i++)
+            {
+                rlDrawCall *draw = &batch->draws[i];
+
+                if (draw->mode == RL_LINES || draw->mode == RL_TRIANGLES)
+                {
+                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount, 1, indexOffset, vertexOffset, 0);
+                    indexOffset += 3;
+                }
+                else
+                {
+                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount / 4 * 6, 1, indexOffset, vertexOffset, 0);
+                    indexOffset += 6;
+                }
+
+                vertexOffset += draw->vertexCount + draw->vertexAlignment;
+            }
+        }
+    }
+
 
     dxState.vertexCounter = 0;
     batch->currentDepth = -1.0f;
@@ -1888,10 +2001,6 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         batch->currentBuffer = 0;
     }
-
-    ExecuteCommands();
-    // TODO: Try only executing and wait before presenting.
-    WaitForPreviousFrame();
 }
 
 void rlSetRenderBatchActive(rlRenderBatch *batch)
@@ -2162,11 +2271,23 @@ void rlLoadDrawQuad(void) {}
 
 void rlPresent()
 {
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.pResource = driver.renderTargets[driver.frameIndex];
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
+    ExecuteCommands();
+
     if (FAILED(driver.swapChain->lpVtbl->Present(driver.swapChain, 1, 0)))
     {
         DXTRACELOG(RL_LOG_WARNING, "Failed to present!");
     }
 
+    WaitForPreviousFrame();
     ResetCommands();
 
     driver.frameIndex = driver.swapChain->lpVtbl->GetCurrentBackBufferIndex(driver.swapChain);
@@ -2176,5 +2297,7 @@ void rlPresent()
 #endif
 
     // Prepare render target for next frame
-    SetDefaultRenderState();
+    UpdateRenderTarget();
+    rlViewport(0, 0, dxState.width, dxState.height);
+    rlScissor(0, 0, dxState.width, dxState.height);
 }
