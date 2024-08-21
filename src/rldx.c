@@ -1190,6 +1190,28 @@ static void BindTexture(unsigned int id)
     driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, offset);
 }
 
+static DXGI_FORMAT ToDXGIFormat(rlPixelFormat format)
+{
+    switch (format)
+    {
+    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return DXGI_FORMAT_B4G4R4A4_UNORM;
+    default: break;
+    }
+
+    return DXGI_FORMAT_R8G8B8A8_UNORM;
+}
+
+static int StrideInBytes(rlPixelFormat format)
+{
+    switch (format)
+    {
+    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return 2;
+    default: break;
+    }
+
+    return 4;
+}
+
 //----------------------------------------------------------------------------------
 // API
 //----------------------------------------------------------------------------------
@@ -1798,7 +1820,11 @@ int rlGetFramebufferWidth(void) { return 0; }
 void rlSetFramebufferHeight(int height) {}
 int rlGetFramebufferHeight(void) { return 0; }
 
-unsigned int rlGetTextureIdDefault(void) { return 0; }
+unsigned int rlGetTextureIdDefault(void)
+{
+    return dxState.defaultTextureId;
+}
+
 unsigned int rlGetShaderIdDefault(void) { return 0; }
 int *rlGetShaderLocsDefault(void) { return 0; }
 
@@ -1960,12 +1986,12 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         if (dxState.vertexCounter > 0)
         {
-            BindTexture(dxState.defaultTextureId);
-
             int indexOffset = 0;
             for (int i = 0, vertexOffset = 0; i < batch->drawCounter; i++)
             {
                 rlDrawCall *draw = &batch->draws[i];
+
+                BindTexture(draw->textureId);
 
                 if (draw->mode == RL_LINES || draw->mode == RL_TRIANGLES)
                 {
@@ -2045,7 +2071,42 @@ bool rlCheckRenderBatchLimit(int vCount)
     return overflow;
 }
 
-void rlSetTexture(unsigned int id) {}
+void rlSetTexture(unsigned int id)
+{
+    if (id == 0)
+    {
+        // NOTE: If quads batch limit is reached, we force a draw call and next batch starts
+        if (dxState.vertexCounter >=
+            dxState.currentBatch->vertexBuffer[dxState.currentBatch->currentBuffer].elementCount*4)
+        {
+            rlDrawRenderBatch(dxState.currentBatch);
+        }
+    }
+    else
+    {
+        if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].textureId != id)
+        {
+            if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount > 0)
+            {
+                if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode == RL_LINES) dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment = ((dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount < 4)? dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount : dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount%4);
+                else if (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].mode == RL_TRIANGLES) dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment = ((dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount < 4)? 1 : (4 - (dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount%4)));
+                else dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment = 0;
+
+                if (!rlCheckRenderBatchLimit(dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment))
+                {
+                    dxState.vertexCounter += dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexAlignment;
+
+                    dxState.currentBatch->drawCounter++;
+                }
+            }
+
+            if (dxState.currentBatch->drawCounter >= RL_DEFAULT_BATCH_DRAWCALLS) rlDrawRenderBatch(dxState.currentBatch);
+
+            dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].textureId = id;
+            dxState.currentBatch->draws[dxState.currentBatch->drawCounter - 1].vertexCount = 0;
+        }
+    }
+}
 
 // Vertex buffers management
 unsigned int rlLoadVertexArray(void) { return 0; }
@@ -2082,7 +2143,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     description.Height = height;
     description.DepthOrArraySize = 1;
     description.MipLevels = 1;
-    description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.Format = ToDXGIFormat(format);
     description.SampleDesc.Count = 1;
     description.SampleDesc.Quality = 0;
     description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -2133,7 +2194,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
 
     D3D12_SUBRESOURCE_DATA textureData = { 0 };
     textureData.pData = data;
-    textureData.RowPitch = format == RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA ? width * 2 : width * 4;
+    textureData.RowPitch = width * StrideInBytes(format);
     textureData.SlicePitch = textureData.RowPitch * height;
 
     for (unsigned int slice = 0; slice < layouts.Footprint.Depth; slice++)
