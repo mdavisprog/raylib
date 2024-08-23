@@ -109,6 +109,17 @@ typedef struct {
 } DXTexture;
 
 typedef struct {
+    unsigned int id;
+    unsigned int type;
+    ID3DBlob *data;
+} DXShader;
+
+typedef struct {
+    unsigned int id;
+    ID3D12PipelineState *state;
+} DXPipeline;
+
+typedef struct {
     ID3D12Resource *buffer;
     D3D12_VERTEX_BUFFER_VIEW view;
 } DXVertexBuffer;
@@ -152,7 +163,8 @@ typedef struct {
     unsigned char *constantBufferPtr;
     ObjectPool textures;
     ObjectPool renderBuffers;
-    ID3D12PipelineState *defaultPipelineState;
+    ObjectPool pipelines;
+    ObjectPool shaders;
     DepthStencil depthStencil;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
@@ -178,6 +190,7 @@ typedef struct {
 
 typedef struct {
     unsigned int defaultTextureId;
+    unsigned int defaultShaderId;
     rlRenderBatch defaultBatch;
     rlRenderBatch *currentBatch;
     DXMatrices matrices;
@@ -873,123 +886,34 @@ static bool InitializeDefaultShader()
     "   return g_Texture.Sample(g_Sampler, input.uv) * input.color; \n"
     "}";
 
-    const size_t vertexShaderCodeLen = strlen(vertexShaderCode);
-    const size_t fragmentShaderCodeLen = strlen(fragmentShaderCode);
-    UINT compileFlags = 0;
+    dxState.defaultShaderId = rlLoadShaderCode(vertexShaderCode, fragmentShaderCode);
 
-#if defined(DIRECTX_SHADER_DEBUG)
-    compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-
-    ID3DBlob *vertexShaderBlob = NULL;
-    ID3DBlob *fragmentShaderBlob = NULL;
-    ID3DBlob *errors = NULL;
-
-    HRESULT result = D3DCompile(vertexShaderCode, vertexShaderCodeLen, "defaultVS", NULL, NULL, "Main", "vs_5_0", compileFlags, 0, &vertexShaderBlob, &errors);
-    if (FAILED(result))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to compile default vertex shader! Error: %s", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
-        return false;
-    }
-
-    result = D3DCompile(fragmentShaderCode, fragmentShaderCodeLen, "defaultFS", NULL, NULL, "Main", "ps_5_0", compileFlags, 0, &fragmentShaderBlob, &errors);
-    if (FAILED(result))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to compile default fragment shader! Error: %s", (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
-        return false;
-    }
-
-    D3D12_INPUT_ELEMENT_DESC elements[3] = { {0}, {0}, {0} };
-    elements[0].SemanticName = "POSITION";
-    elements[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-    elements[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-    elements[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-
-    elements[1].SemanticName = "TEXCOORD";
-    elements[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-    elements[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-    elements[1].Format = DXGI_FORMAT_R32G32_FLOAT;
-    elements[1].InputSlot = 1;
-
-    elements[2].SemanticName = "COLOR";
-    elements[2].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-    elements[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-    elements[2].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    elements[2].InputSlot = 2;
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = { 0 };
-    graphicsDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    graphicsDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    graphicsDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    graphicsDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    graphicsDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    graphicsDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    graphicsDesc.RasterizerState.DepthClipEnable = TRUE;
-    graphicsDesc.RasterizerState.MultisampleEnable = FALSE;
-    graphicsDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-    graphicsDesc.RasterizerState.ForcedSampleCount = 0;
-    graphicsDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-    graphicsDesc.BlendState.AlphaToCoverageEnable = FALSE;
-    graphicsDesc.BlendState.IndependentBlendEnable = FALSE;
-    for (UINT I = 0; I < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++I)
-    {
-        graphicsDesc.BlendState.RenderTarget[I].BlendEnable = TRUE;
-        graphicsDesc.BlendState.RenderTarget[I].LogicOpEnable = FALSE;
-        graphicsDesc.BlendState.RenderTarget[I].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-        graphicsDesc.BlendState.RenderTarget[I].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-        graphicsDesc.BlendState.RenderTarget[I].BlendOp = D3D12_BLEND_OP_ADD;
-        graphicsDesc.BlendState.RenderTarget[I].SrcBlendAlpha = D3D12_BLEND_ONE;
-        graphicsDesc.BlendState.RenderTarget[I].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        graphicsDesc.BlendState.RenderTarget[I].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        graphicsDesc.BlendState.RenderTarget[I].LogicOp = D3D12_LOGIC_OP_NOOP;
-        graphicsDesc.BlendState.RenderTarget[I].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    }
-
-    graphicsDesc.SampleMask = UINT_MAX;
-    graphicsDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    graphicsDesc.NumRenderTargets = 1;
-    graphicsDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    graphicsDesc.SampleDesc.Count = 1;
-
-    graphicsDesc.InputLayout.pInputElementDescs = elements;
-    graphicsDesc.InputLayout.NumElements = _countof(elements);
-    graphicsDesc.pRootSignature = driver.rootSignature;
-    graphicsDesc.VS.pShaderBytecode = vertexShaderBlob->lpVtbl->GetBufferPointer(vertexShaderBlob);
-    graphicsDesc.VS.BytecodeLength = vertexShaderBlob->lpVtbl->GetBufferSize(vertexShaderBlob);
-    graphicsDesc.PS.pShaderBytecode = fragmentShaderBlob->lpVtbl->GetBufferPointer(fragmentShaderBlob);
-    graphicsDesc.PS.BytecodeLength = fragmentShaderBlob->lpVtbl->GetBufferSize(fragmentShaderBlob);
-
-    graphicsDesc.DepthStencilState.DepthEnable = FALSE;
-    graphicsDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    graphicsDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    graphicsDesc.DepthStencilState.StencilEnable = FALSE;
-    graphicsDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
-    graphicsDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
-    graphicsDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
-    graphicsDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
-    graphicsDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
-    graphicsDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    graphicsDesc.DepthStencilState.BackFace = graphicsDesc.DepthStencilState.FrontFace;
-    graphicsDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
-    bool success = true;
-    result = driver.device->lpVtbl->CreateGraphicsPipelineState(driver.device, &graphicsDesc, &IID_ID3D12PipelineState, (LPVOID*)&driver.defaultPipelineState);
-    if (FAILED(result))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create default graphics pipeline state!");
-        success = false;
-    }
-
-    DXRELEASE(vertexShaderBlob);
-    DXRELEASE(fragmentShaderBlob);
-
-    return success;
+    return dxState.defaultShaderId != 0;
 }
 
-static void BindDefaultPipeline()
+static DXPipeline *GetPipeline(unsigned int id)
 {
-    driver.commandList->lpVtbl->SetPipelineState(driver.commandList, driver.defaultPipelineState);
+    for (size_t i = 0; i < driver.pipelines.pool.length; i++)
+    {
+        DXPipeline *pipeline = (DXPipeline*)VectorGet(&driver.pipelines.pool, i);
+
+        if (pipeline->id == id)
+        {
+            return pipeline;
+        }
+    }
+
+    return NULL;
+}
+
+static void BindPipeline(unsigned int id)
+{
+    DXPipeline *pipeline = GetPipeline(id);
+
+    if (pipeline != NULL)
+    {
+        driver.commandList->lpVtbl->SetPipelineState(driver.commandList, pipeline->state);
+    }
 }
 
 static unsigned int CreateRenderBuffer(
@@ -1210,6 +1134,37 @@ static int StrideInBytes(rlPixelFormat format)
     }
 
     return 4;
+}
+
+static DXShader *GetShader(unsigned int id)
+{
+    for (size_t i = 0; i < driver.shaders.pool.length; i++)
+    {
+        DXShader *shader = (DXShader*)VectorGet(&driver.shaders.pool, i);
+
+        if (shader->id == id)
+        {
+            return shader;
+        }
+    }
+
+    return NULL;
+}
+
+static bool RemoveShader(unsigned int id)
+{
+    for (size_t i = 0; i < driver.shaders.pool.length; i++)
+    {
+        DXShader *shader = (DXShader*)VectorGet(&driver.shaders.pool, i);
+
+        if (shader->id == id)
+        {
+            VectorRemove(&driver.shaders.pool, i);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 //----------------------------------------------------------------------------------
@@ -1678,6 +1633,18 @@ void rlSetBlendFactorsSeparate(int glSrcRGB, int glDstRGB, int glSrcAlpha, int g
 
 void rlglInit(int width, int height)
 {
+    driver.textures.pool = VectorCreate(sizeof(DXTexture));
+    driver.textures.index = 1;
+
+    driver.renderBuffers.pool = VectorCreate(sizeof(DXRenderBuffer));
+    driver.renderBuffers.index = 1;
+
+    driver.pipelines.pool = VectorCreate(sizeof(DXPipeline));
+    driver.pipelines.index = 1;
+
+    driver.shaders.pool = VectorCreate(sizeof(DXShader));
+    driver.shaders.index = 1;
+
     if (!InitializeDevice())
     {
         return;
@@ -1735,12 +1702,6 @@ void rlglInit(int width, int height)
         return;
     }
 
-    driver.textures.pool = VectorCreate(sizeof(DXTexture));
-    driver.textures.index = 1;
-
-    driver.renderBuffers.pool = VectorCreate(sizeof(DXRenderBuffer));
-    driver.renderBuffers.index = 1;
-
     DXTRACELOG(RL_LOG_INFO, "Initialized DirectX!");
 
     char* driverName = Windows_ToMultiByte(desc.Description);
@@ -1776,6 +1737,20 @@ void rlglInit(int width, int height)
 void rlglClose(void)
 {
     rlUnloadRenderBatch(dxState.defaultBatch);
+
+    for (size_t i = 0; i < driver.shaders.pool.length; i++)
+    {
+        DXShader *shader = (DXShader*)VectorGet(&driver.shaders.pool, i);
+        DXRELEASE(shader->data);
+    }
+    VectorDestroy(&driver.shaders.pool);
+
+    for (size_t i = 0; i < driver.pipelines.pool.length; i++)
+    {
+        DXPipeline *pipeline = (DXPipeline*)VectorGet(&driver.pipelines.pool, i);
+        DXRELEASE(pipeline->state);
+    }
+    VectorDestroy(&driver.pipelines.pool);
 
     for (size_t i = 0; i < driver.textures.pool.length; i++)
     {
@@ -1954,7 +1929,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
         UploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char));
     }
 
-    BindDefaultPipeline();
+    BindPipeline(dxState.defaultShaderId);
     BindRootSignature();
 
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = CPUOffset(&driver.depthStencil.descriptor, 0);
@@ -2267,9 +2242,176 @@ bool rlFramebufferComplete(unsigned int id) { return false; }
 void rlUnloadFramebuffer(unsigned int id) {}
 
 // Shaders management
-unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode) { return 0; }
-unsigned int rlCompileShader(const char *shaderCode, int type) { return 0; }
-unsigned int rlLoadShaderProgram(unsigned int vShaderId, unsigned int fShaderId) { return 0; }
+unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode)
+{
+    const unsigned int vShaderId = rlCompileShader(vsCode, RL_VERTEX_SHADER);
+    if (vShaderId == 0)
+    {
+        return 0;
+    }
+
+    const unsigned int fShaderId = rlCompileShader(fsCode, RL_FRAGMENT_SHADER);
+    if (fShaderId == 0)
+    {
+        return 0;
+    }
+
+    return rlLoadShaderProgram(vShaderId, fShaderId);
+}
+
+unsigned int rlCompileShader(const char *shaderCode, int type)
+{
+    const size_t len = strlen(shaderCode);
+
+    UINT compileFlags = 0;
+
+#if defined(DIRECTX_SHADER_DEBUG)
+    compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    DXShader shader;
+    shader.type = type;
+
+    ID3DBlob *errors = NULL;
+    const char *sourceName = type == RL_VERTEX_SHADER ? "vertex" : "fragment";
+    const char *target = type == RL_VERTEX_SHADER ? "vs_5_0" : "ps_5_0";
+    HRESULT result = D3DCompile(shaderCode, len, sourceName, NULL, NULL, "Main", target, compileFlags, 0, &shader.data, &errors);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to compile %s shader! Error: %s", sourceName, (LPCSTR)errors->lpVtbl->GetBufferPointer(errors));
+        return 0;
+    }
+
+    shader.id = driver.shaders.index++;
+    VectorPush(&driver.shaders.pool, &shader);
+
+    return shader.id;
+}
+
+unsigned int rlLoadShaderProgram(unsigned int vShaderId, unsigned int fShaderId)
+{
+    DXShader *vShader = GetShader(vShaderId);
+    DXShader *fShader = GetShader(fShaderId);
+
+    if (vShader == NULL)
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Invalid vertex shader id '%d'!", vShaderId);
+        return 0;
+    }
+
+    if (vShader->type != RL_VERTEX_SHADER)
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Vertex shader '%d' is not RL_VERTEX_SHADER!", vShaderId);
+        return 0;
+    }
+
+    if (fShader == NULL)
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Invalid fragment shader id '%d'!", fShaderId);
+        return 0;
+    }
+
+    if (fShader->type != RL_FRAGMENT_SHADER)
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Fragment shader '%d' is not RL_FRAGMENT_SHADER!", fShaderId);
+        return 0;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC elements[3] = { {0}, {0}, {0} };
+    elements[0].SemanticName = "POSITION";
+    elements[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    elements[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+    elements[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+
+    elements[1].SemanticName = "TEXCOORD";
+    elements[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    elements[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+    elements[1].Format = DXGI_FORMAT_R32G32_FLOAT;
+    elements[1].InputSlot = 1;
+
+    elements[2].SemanticName = "COLOR";
+    elements[2].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    elements[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+    elements[2].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    elements[2].InputSlot = 2;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = { 0 };
+    graphicsDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    graphicsDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    graphicsDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    graphicsDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    graphicsDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    graphicsDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    graphicsDesc.RasterizerState.DepthClipEnable = TRUE;
+    graphicsDesc.RasterizerState.MultisampleEnable = FALSE;
+    graphicsDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    graphicsDesc.RasterizerState.ForcedSampleCount = 0;
+    graphicsDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    graphicsDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    graphicsDesc.BlendState.IndependentBlendEnable = FALSE;
+    for (UINT I = 0; I < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++I)
+    {
+        graphicsDesc.BlendState.RenderTarget[I].BlendEnable = TRUE;
+        graphicsDesc.BlendState.RenderTarget[I].LogicOpEnable = FALSE;
+        graphicsDesc.BlendState.RenderTarget[I].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        graphicsDesc.BlendState.RenderTarget[I].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        graphicsDesc.BlendState.RenderTarget[I].BlendOp = D3D12_BLEND_OP_ADD;
+        graphicsDesc.BlendState.RenderTarget[I].SrcBlendAlpha = D3D12_BLEND_ONE;
+        graphicsDesc.BlendState.RenderTarget[I].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        graphicsDesc.BlendState.RenderTarget[I].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        graphicsDesc.BlendState.RenderTarget[I].LogicOp = D3D12_LOGIC_OP_NOOP;
+        graphicsDesc.BlendState.RenderTarget[I].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    }
+
+    graphicsDesc.SampleMask = UINT_MAX;
+    graphicsDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    graphicsDesc.NumRenderTargets = 1;
+    graphicsDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    graphicsDesc.SampleDesc.Count = 1;
+
+    graphicsDesc.InputLayout.pInputElementDescs = elements;
+    graphicsDesc.InputLayout.NumElements = _countof(elements);
+    graphicsDesc.pRootSignature = driver.rootSignature;
+    graphicsDesc.VS.pShaderBytecode = vShader->data->lpVtbl->GetBufferPointer(vShader->data);
+    graphicsDesc.VS.BytecodeLength = vShader->data->lpVtbl->GetBufferSize(vShader->data);
+    graphicsDesc.PS.pShaderBytecode = fShader->data->lpVtbl->GetBufferPointer(fShader->data);
+    graphicsDesc.PS.BytecodeLength = fShader->data->lpVtbl->GetBufferSize(fShader->data);
+
+    graphicsDesc.DepthStencilState.DepthEnable = TRUE;
+    graphicsDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    graphicsDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    graphicsDesc.DepthStencilState.StencilEnable = TRUE;
+    graphicsDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    graphicsDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    graphicsDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    graphicsDesc.DepthStencilState.BackFace = graphicsDesc.DepthStencilState.FrontFace;
+    graphicsDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+    DXPipeline pipeline = { 0 };
+    HRESULT result = driver.device->lpVtbl->CreateGraphicsPipelineState(driver.device, &graphicsDesc, &IID_ID3D12PipelineState, (LPVOID*)&pipeline.state);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to load shader program!");
+    }
+    else
+    {
+        pipeline.id = driver.pipelines.index++;
+        VectorPush(&driver.pipelines.pool, &pipeline);
+    }
+
+    DXRELEASE(vShader->data);
+    DXRELEASE(vShader->data);
+
+    RemoveShader(vShader->id);
+    RemoveShader(fShader->id);
+
+    return pipeline.id;
+}
+
 void rlUnloadShaderProgram(unsigned int id) {}
 int rlGetLocationUniform(unsigned int shaderId, const char *uniformName) { return 0; }
 int rlGetLocationAttrib(unsigned int shaderId, const char *attribName) { return 0; }
