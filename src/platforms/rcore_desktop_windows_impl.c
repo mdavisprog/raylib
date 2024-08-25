@@ -75,6 +75,16 @@ static char* ToMultiByte(wchar_t* data)
     return result;
 }
 
+static wchar_t *ToWide(const char *data)
+{
+    const int dataLength = (int)strlen(data);
+    const int length = MultiByteToWideChar(CP_ACP, 0, data, dataLength, NULL, 0);
+    wchar_t *result = (wchar_t*)malloc(sizeof(wchar_t) * (length + 1));
+    MultiByteToWideChar(CP_ACP, 0, data, dataLength, result, length);
+    result[length] = 0;
+    return result;
+}
+
 static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -152,7 +162,33 @@ int Windows_CreateWindow(const char* title, int width, int height)
     return 0;
 }
 
-void Windows_GetWindowSize(int* width, int* height)
+void Windows_SetWindowPos(int x, int y)
+{
+    SetWindowPos(platform.handle, HWND_TOP, x, y, 0, 0, SWP_NOSIZE);
+}
+
+void Windows_GetWindowPos(int *x, int *y)
+{
+    RECT bounds = { 0 };
+    GetWindowRect(platform.handle, &bounds);
+
+    if (x != NULL)
+    {
+        *x = bounds.left;
+    }
+
+    if (y != NULL)
+    {
+        *y = bounds.top;
+    }
+}
+
+void Windows_SetWindowSize(int width, int height)
+{
+    SetWindowPos(platform.handle, HWND_TOP, 0, 0, width, height, SWP_NOMOVE);
+}
+
+void Windows_GetWindowSize(int *width, int *height)
 {
     RECT bounds = { 0 };
     GetWindowRect(platform.handle, &bounds);
@@ -166,6 +202,25 @@ void Windows_GetWindowSize(int* width, int* height)
     {
         *height = bounds.bottom - bounds.top;
     }
+}
+
+void Windows_SetWindowTitle(const char *title)
+{
+    wchar_t *wTitle = ToWide(title);
+    SetWindowTextW(platform.handle, wTitle);
+    free(wTitle);
+}
+
+void Windows_GetWorkingArea(int *x, int *y, int *width, int *height)
+{
+    HMONITOR monitor = MonitorFromWindow(platform.handle, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info = { 0 };
+    info.cbSize = sizeof(MONITORINFO);
+    GetMonitorInfo(monitor, &info);
+    if (x != NULL) *x = info.rcWork.left;
+    if (y != NULL) *y = info.rcWork.top;
+    if (width != NULL) *width = info.rcWork.right - info.rcWork.left;
+    if (height != NULL) *height = info.rcWork.bottom - info.rcWork.top;
 }
 
 void *Windows_GetWindowHandle()

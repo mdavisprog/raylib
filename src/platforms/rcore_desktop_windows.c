@@ -144,12 +144,13 @@ void SetWindowIcons(Image *images, int count)
 void SetWindowTitle(const char *title)
 {
     CORE.Window.title = title;
+    Windows_SetWindowTitle(title);
 }
 
 // Set window position on screen (windowed mode)
 void SetWindowPosition(int x, int y)
 {
-    TRACELOG(LOG_WARNING, "SetWindowPosition() not available on target platform");
+    Windows_SetWindowPos(x, y);
 }
 
 // Set monitor for the current window
@@ -175,7 +176,7 @@ void SetWindowMaxSize(int width, int height)
 // Set window dimensions
 void SetWindowSize(int width, int height)
 {
-    TRACELOG(LOG_WARNING, "SetWindowSize() not available on target platform");
+    Windows_SetWindowSize(width, height);
 }
 
 // Set window opacity, value opacity is between 0.0 and 1.0
@@ -262,8 +263,9 @@ const char *GetMonitorName(int monitor)
 // Get window position XY on monitor
 Vector2 GetWindowPosition(void)
 {
-    TRACELOG(LOG_WARNING, "GetWindowPosition() not implemented on target platform");
-    return (Vector2){ 0, 0 };
+    int x, y;
+    Windows_GetWindowPos(&x, &y);
+    return (Vector2){ (float)x, (float)y };
 }
 
 // Get window scale DPI factor for current monitor
@@ -453,23 +455,17 @@ int InitPlatform(void)
     TRACELOG(LOG_INFO, "    > Render size:  %i x %i", CORE.Window.render.width, CORE.Window.render.height);
     TRACELOG(LOG_INFO, "    > Viewport offsets: %i, %i", CORE.Window.renderOffset.x, CORE.Window.renderOffset.y);
 
-    // TODO: Initialize input events system
-    // It could imply keyboard, mouse, gamepad, touch...
-    // Depending on the platform libraries/SDK it could use a callback mechanism
-    // For system events and inputs evens polling on a per-frame basis, use PollInputEvents()
-    //----------------------------------------------------------------------------
-    // ...
-    //----------------------------------------------------------------------------
+    int x, y, width, height;
+    Windows_GetWorkingArea(&x, &y, &width, &height);
+    int posX = x + (width - (int)CORE.Window.screen.width) / 2;
+    int posY = y + (height - (int)CORE.Window.screen.height) / 2;
+    if (posX < x) posX = x;
+    if (posY < y) posY = y;
+    SetWindowPosition(posX, posY);
 
-    // TODO: Initialize timing system
-    //----------------------------------------------------------------------------
     InitTimer();
-    //----------------------------------------------------------------------------
 
-    // TODO: Initialize storage system
-    //----------------------------------------------------------------------------
     CORE.Storage.basePath = GetWorkingDirectory();
-    //----------------------------------------------------------------------------
 
     TRACELOG(LOG_INFO, "PLATFORM: CUSTOM: Initialized successfully");
 

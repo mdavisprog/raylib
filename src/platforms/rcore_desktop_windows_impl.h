@@ -42,7 +42,12 @@ typedef struct WindowsState {
 int Windows_Initialize();
 void Windows_Close();
 int Windows_CreateWindow(const char* title, int width, int height);
-void Windows_GetWindowSize(int* width, int* height);
+void Windows_SetWindowPos(int x, int y);
+void Windows_GetWindowPos(int *x, int *y);
+void Windows_SetWindowSize(int width, int height);
+void Windows_GetWindowSize(int *width, int *height);
+void Windows_SetWindowTitle(const char *title);
+void Windows_GetWorkingArea(int *x, int *y, int *width, int *height);
 void *Windows_GetWindowHandle();
 long long Windows_GetTime();
 void Windows_PollEvents();
