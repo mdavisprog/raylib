@@ -1007,10 +1007,12 @@ static DXRenderBuffer *GetRenderBuffer(unsigned int id)
     return NULL;
 }
 
-static bool UploadData(DXVertexBuffer *buffer, void *data, size_t size)
+static bool UploadData(DXVertexBuffer *buffer, void *data, size_t size, size_t offset)
 {
     unsigned char *bufferData = NULL;
     D3D12_RANGE range = { 0 };
+    range.Begin = offset;
+    range.End = offset + size;
 
     HRESULT result = buffer->buffer->lpVtbl->Map(buffer->buffer, 0, &range, (LPVOID*)&bufferData);
     if (FAILED(result))
@@ -1924,9 +1926,9 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
     if (dxState.vertexCounter > 0)
     {
-        UploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float));
-        UploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float));
-        UploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char));
+        UploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float), 0);
+        UploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float), 0);
+        UploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char), 0);
     }
 
     BindPipeline(dxState.defaultShaderId);
