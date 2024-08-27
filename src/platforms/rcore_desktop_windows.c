@@ -367,6 +367,7 @@ void SetMousePosition(int x, int y)
 {
     CORE.Input.Mouse.currentPosition = (Vector2){ (float)x, (float)y };
     CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
+    Windows_SetMousePos(x, y);
 }
 
 // Set mouse cursor
@@ -389,31 +390,32 @@ void PollInputEvents(void)
     CORE.Input.Keyboard.charPressedQueueCount = 0;
 
     // Reset key repeats
-    for (int i = 0; i < MAX_KEYBOARD_KEYS; i++) CORE.Input.Keyboard.keyRepeatInFrame[i] = 0;
-
-    // Reset last gamepad button/axis registered state
-    CORE.Input.Gamepad.lastButtonPressed = 0; // GAMEPAD_BUTTON_UNKNOWN
-    //CORE.Input.Gamepad.axisCount = 0;
-
-    // Register previous touch states
-    for (int i = 0; i < MAX_TOUCH_POINTS; i++) CORE.Input.Touch.previousTouchState[i] = CORE.Input.Touch.currentTouchState[i];
-
-    // Reset touch positions
-    // TODO: It resets on target platform the mouse position and not filled again until a move-event,
-    // so, if mouse is not moved it returns a (0, 0) position... this behaviour should be reviewed!
-    //for (int i = 0; i < MAX_TOUCH_POINTS; i++) CORE.Input.Touch.position[i] = (Vector2){ 0, 0 };
-
-    // Register previous keys states
-    // NOTE: Android supports up to 260 keys
-    for (int i = 0; i < 260; i++)
+    for (int i = 0; i < MAX_KEYBOARD_KEYS; i++)
     {
         CORE.Input.Keyboard.previousKeyState[i] = CORE.Input.Keyboard.currentKeyState[i];
         CORE.Input.Keyboard.keyRepeatInFrame[i] = 0;
     }
 
+    // Register previous mouse states
+    for (int i = 0; i < MAX_MOUSE_BUTTONS; i++) CORE.Input.Mouse.previousButtonState[i] = CORE.Input.Mouse.currentButtonState[i];
+
+    // Register previous touch states
+    for (int i = 0; i < MAX_TOUCH_POINTS; i++) CORE.Input.Touch.previousTouchState[i] = CORE.Input.Touch.currentTouchState[i];
+
     // TODO: Poll input events for current platform
     Windows_PollEvents();
-    CORE.Window.shouldClose = Windows_CurrentState()->shouldClose;
+
+    WindowsState *state = Windows_CurrentState();
+    CORE.Window.shouldClose = state->shouldClose;
+
+    CORE.Input.Mouse.previousPosition = CORE.Input.Mouse.currentPosition;
+    CORE.Input.Mouse.currentPosition.x = (float)state->mouseX;
+    CORE.Input.Mouse.currentPosition.y = (float)state->mouseY;
+
+    for (int i = 0; i < MAX_MOUSE_BUTTONS; i++)
+    {
+        CORE.Input.Mouse.currentButtonState[i] = state->mouseButtons[i];
+    }
 }
 
 

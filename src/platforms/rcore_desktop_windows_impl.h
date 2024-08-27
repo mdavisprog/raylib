@@ -37,6 +37,9 @@
 
 typedef struct WindowsState {
     int shouldClose;
+    int mouseX;
+    int mouseY;
+    char mouseButtons[8];
 } WindowsState;
 
 int Windows_Initialize();
@@ -53,5 +56,6 @@ long long Windows_GetTime();
 void Windows_PollEvents();
 WindowsState *Windows_CurrentState();
 char *Windows_ToMultiByte(wchar_t* data); // Returned value must be freed!
+void Windows_SetMousePos(int x, int y);
 
 #endif // RCORE_DESKTOP_WINDOWS_IMPL_H

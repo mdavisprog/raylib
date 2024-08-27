@@ -45,6 +45,7 @@
 
 #include <stdlib.h>
 #include <Windows.h>
+#include <windowsx.h>
 
 //----------------------------------------------------------------------------------
 // Types
@@ -89,8 +90,43 @@ static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
     {
-    case WM_CLOSE: {
+    case WM_CLOSE:
+    {
         platform.state.shouldClose = TRUE;
+    } break;
+
+    case WM_MOUSEMOVE:
+    {
+        platform.state.mouseX = GET_X_LPARAM(lParam);
+        platform.state.mouseY = GET_Y_LPARAM(lParam);
+    } break;
+
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_XBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_RBUTTONUP:
+    case WM_MBUTTONUP:
+    case WM_XBUTTONUP:
+    {
+        int button = 0;
+        if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP)
+        {
+            button = 1;
+        }
+        else if (msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP)
+        {
+            button = 2;
+        }
+        else if (msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP)
+        {
+            button = GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? 3 : 4;
+        }
+
+        const char pressed = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN;
+
+        platform.state.mouseButtons[button] = pressed;
     } break;
 
     default: break;
@@ -257,4 +293,9 @@ WindowsState* Windows_CurrentState()
 char* Windows_ToMultiByte(wchar_t* data)
 {
     return ToMultiByte(data);
+}
+
+void Windows_SetMousePos(int x, int y)
+{
+    SetCursorPos(x, y);
 }
