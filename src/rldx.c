@@ -121,6 +121,7 @@ typedef struct {
 
 typedef struct {
     ID3D12Resource *buffer;
+    ID3D12Resource *uploadBuffer;
     D3D12_VERTEX_BUFFER_VIEW view;
 } DXVertexBuffer;
 
@@ -195,6 +196,7 @@ typedef struct {
     rlRenderBatch *currentBatch;
     DXMatrices matrices;
     int vertexCounter;
+    int indexOffset;
     float texcoordx, texcoordy;
     float normalx, normaly, normalz;
     unsigned char colorr, colorg, colorb, colora;
@@ -845,6 +847,9 @@ static void UpdateRenderTarget()
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CPUOffset(&driver.rtv, driver.frameIndex);
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUOffset(&driver.depthStencil.descriptor, 0);
     driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, &dsvHandle);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = CPUOffset(&driver.depthStencil.descriptor, 0);
+    driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
 }
 
 static bool InitializeDefaultShader()
@@ -916,12 +921,102 @@ static void BindPipeline(unsigned int id)
     }
 }
 
+static DXVertexBuffer CreateVertexBuffer(UINT64 size, UINT stride)
+{
+    DXVertexBuffer buffer = { 0 };
+
+    D3D12_HEAP_PROPERTIES bufferHeap = { 0 };
+    bufferHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    bufferHeap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    bufferHeap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    bufferHeap.CreationNodeMask = 1;
+    bufferHeap.VisibleNodeMask = 1;
+
+    D3D12_HEAP_PROPERTIES uploadBufferHeap = { 0 };
+    uploadBufferHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    uploadBufferHeap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    uploadBufferHeap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    uploadBufferHeap.CreationNodeMask = 1;
+    uploadBufferHeap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resource = { 0 };
+    resource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resource.Alignment = 0;
+    resource.Width = size;
+    resource.Height = 1;
+    resource.DepthOrArraySize = 1;
+    resource.MipLevels = 1;
+    resource.Format = DXGI_FORMAT_UNKNOWN;
+    resource.SampleDesc.Count = 1;
+    resource.SampleDesc.Quality = 0;
+    resource.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resource.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &bufferHeap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_COMMON, NULL, &IID_ID3D12Resource, (LPVOID*)&buffer.buffer);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create default heap buffer!");
+        return buffer;
+    }
+
+    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &uploadBufferHeap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&buffer.uploadBuffer);
+    if (FAILED(result))
+    {
+        DXRELEASE(buffer.buffer);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create upload heap buffer!");
+        return buffer;
+    }
+
+    buffer.view.BufferLocation = buffer.buffer->lpVtbl->GetGPUVirtualAddress(buffer.buffer);
+    buffer.view.StrideInBytes = stride;
+
+    return buffer;
+}
+
+static void DestroyVertexBuffer(DXVertexBuffer *buffer)
+{
+    DXRELEASE(buffer->buffer);
+    DXRELEASE(buffer->uploadBuffer);
+}
+
+static void DestroyRenderBuffer(DXRenderBuffer *renderBuffer)
+{
+    DestroyVertexBuffer(&renderBuffer->vertex);
+    DestroyVertexBuffer(&renderBuffer->texcoord);
+    DestroyVertexBuffer(&renderBuffer->color);
+    DXRELEASE(renderBuffer->index);
+}
+
 static unsigned int CreateRenderBuffer(
     UINT64 vertexBufferSize, UINT vertexBufferStride,
     UINT64 texcoordBufferSize, UINT texcoordBufferStride,
     UINT64 colorBufferSize, UINT colorBufferStride,
     UINT64 indexBufferSize)
 {
+    DXRenderBuffer buffer = { 0 };
+    buffer.vertex = CreateVertexBuffer(vertexBufferSize, vertexBufferStride);
+    if (buffer.vertex.buffer == NULL)
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create vertex buffer resource!");
+        return 0;
+    }
+
+    buffer.texcoord = CreateVertexBuffer(texcoordBufferSize, texcoordBufferStride);
+    if (buffer.texcoord.buffer == NULL)
+    {
+        DestroyRenderBuffer(&buffer);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texcoord buffer resource!");
+        return 0;
+    }
+
+    buffer.color = CreateVertexBuffer(colorBufferSize, colorBufferStride);
+    if (buffer.color.buffer == NULL)
+    {
+        DestroyRenderBuffer(&buffer);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create color buffer resource!");
+        return 0;
+    }
+
     D3D12_HEAP_PROPERTIES heap = { 0 };
     heap.Type = D3D12_HEAP_TYPE_UPLOAD;
     heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -932,7 +1027,7 @@ static unsigned int CreateRenderBuffer(
     D3D12_RESOURCE_DESC resource = { 0 };
     resource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     resource.Alignment = 0;
-    resource.Width = vertexBufferSize;
+    resource.Width = indexBufferSize;
     resource.Height = 1;
     resource.DepthOrArraySize = 1;
     resource.MipLevels = 1;
@@ -942,46 +1037,13 @@ static unsigned int CreateRenderBuffer(
     resource.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     resource.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    DXRenderBuffer buffer = { 0 };
-    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.vertex.buffer);
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.index);
     if (FAILED(result))
     {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create vertex buffer resource!");
-        return 0;
-    }
-
-    resource.Width = texcoordBufferSize;
-    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.texcoord.buffer);
-    if (FAILED(result))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create texcoord buffer resource!");
-        return 0;
-    }
-
-    resource.Width = colorBufferSize;
-    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.color.buffer);
-    if (FAILED(result))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create color buffer resource!");
-        return 0;
-    }
-
-    resource.Width = indexBufferSize;
-    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.index);
-    if (FAILED(result))
-    {
+        DestroyRenderBuffer(&buffer);
         DXTRACELOG(RL_LOG_ERROR, "Failed to create index buffer resource!");
         return 0;
     }
-
-    buffer.vertex.view.BufferLocation = buffer.vertex.buffer->lpVtbl->GetGPUVirtualAddress(buffer.vertex.buffer);
-    buffer.vertex.view.StrideInBytes = vertexBufferStride;
-
-    buffer.texcoord.view.BufferLocation = buffer.texcoord.buffer->lpVtbl->GetGPUVirtualAddress(buffer.texcoord.buffer);
-    buffer.texcoord.view.StrideInBytes = texcoordBufferStride;
-
-    buffer.color.view.BufferLocation = buffer.color.buffer->lpVtbl->GetGPUVirtualAddress(buffer.color.buffer);
-    buffer.color.view.StrideInBytes = colorBufferStride;
 
     buffer.indexView.BufferLocation = buffer.index->lpVtbl->GetGPUVirtualAddress(buffer.index);
     buffer.indexView.Format = DXGI_FORMAT_R32_UINT;
@@ -1011,20 +1073,32 @@ static bool UploadData(DXVertexBuffer *buffer, void *data, size_t size, size_t o
 {
     unsigned char *bufferData = NULL;
     D3D12_RANGE range = { 0 };
-    range.Begin = offset;
-    range.End = offset + size;
 
-    HRESULT result = buffer->buffer->lpVtbl->Map(buffer->buffer, 0, &range, (LPVOID*)&bufferData);
+    HRESULT result = buffer->uploadBuffer->lpVtbl->Map(buffer->uploadBuffer, 0, &range, (LPVOID*)&bufferData);
     if (FAILED(result))
     {
         DXTRACELOG(RL_LOG_WARNING, "Failed to map resource for upload!");
         return false;
     }
 
-    memcpy(bufferData, data, size);
+    memcpy(bufferData + offset, data, size);
 
-    buffer->buffer->lpVtbl->Unmap(buffer->buffer, 0, NULL);
-    buffer->view.SizeInBytes = (UINT)size;
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = buffer->buffer;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+    driver.commandList->lpVtbl->CopyBufferRegion(driver.commandList, buffer->buffer, offset, buffer->uploadBuffer, offset, size);
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
+    buffer->view.SizeInBytes += (UINT)size;
 
     return true;
 }
@@ -1765,10 +1839,7 @@ void rlglClose(void)
     for (size_t i = 0; i < driver.renderBuffers.pool.length; i++)
     {
         DXRenderBuffer* renderBuffer = (DXRenderBuffer*)VectorGet(&driver.renderBuffers.pool, i);
-        DXRELEASE(renderBuffer->vertex.buffer);
-        DXRELEASE(renderBuffer->texcoord.buffer);
-        DXRELEASE(renderBuffer->color.buffer);
-        DXRELEASE(renderBuffer->index);
+        DestroyRenderBuffer(renderBuffer);
     }
     VectorDestroy(&driver.renderBuffers.pool);
 
@@ -1926,16 +1997,13 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
     if (dxState.vertexCounter > 0)
     {
-        UploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float), 0);
-        UploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float), 0);
-        UploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char), 0);
+        UploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float), renderBuffer->vertex.view.SizeInBytes);
+        UploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float), renderBuffer->texcoord.view.SizeInBytes);
+        UploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char), renderBuffer->color.view.SizeInBytes);
     }
 
     BindPipeline(dxState.defaultShaderId);
     BindRootSignature();
-
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = CPUOffset(&driver.depthStencil.descriptor, 0);
-    driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
 
     ID3D12DescriptorHeap* heaps[] = { driver.srv.descriptorHeap };
     driver.commandList->lpVtbl->SetDescriptorHeaps(driver.commandList, _countof(heaps), heaps);
@@ -1963,7 +2031,6 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         if (dxState.vertexCounter > 0)
         {
-            int indexOffset = 0;
             for (int i = 0, vertexOffset = 0; i < batch->drawCounter; i++)
             {
                 rlDrawCall *draw = &batch->draws[i];
@@ -1972,13 +2039,14 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
                 if (draw->mode == RL_LINES || draw->mode == RL_TRIANGLES)
                 {
-                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount, 1, indexOffset, vertexOffset, 0);
-                    indexOffset += 3;
+                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount, 1, dxState.indexOffset, vertexOffset, 0);
+                    dxState.indexOffset += 3;
                 }
                 else
                 {
-                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount / 4 * 6, 1, indexOffset, vertexOffset, 0);
-                    indexOffset += 6;
+                    const int indexCount = draw->vertexCount / 4 * 6;
+                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, indexCount, 1, dxState.indexOffset, vertexOffset, 0);
+                    dxState.indexOffset += indexCount;
                 }
 
                 vertexOffset += draw->vertexCount + draw->vertexAlignment;
@@ -2505,4 +2573,14 @@ void rlPresent()
     UpdateRenderTarget();
     rlViewport(0, 0, dxState.width, dxState.height);
     rlScissor(0, 0, dxState.width, dxState.height);
+
+    for (int i = 0; i < driver.renderBuffers.pool.length; i++)
+    {
+        DXRenderBuffer *renderBuffer = (DXRenderBuffer*)VectorGet(&driver.renderBuffers.pool, i);
+        renderBuffer->vertex.view.SizeInBytes = 0;
+        renderBuffer->texcoord.view.SizeInBytes = 0;
+        renderBuffer->color.view.SizeInBytes = 0;
+    }
+
+    dxState.indexOffset = 0;
 }
