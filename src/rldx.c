@@ -196,13 +196,14 @@ typedef struct {
     rlRenderBatch *currentBatch;
     DXMatrices matrices;
     int vertexCounter;
-    int indexOffset;
     float texcoordx, texcoordy;
     float normalx, normaly, normalz;
     unsigned char colorr, colorg, colorb, colora;
     ConstantBuffer constantBuffer;
     int width;
     int height;
+    int viewportx, viewporty, viewportWidth, viewportHeight;
+    int scissorx, scissory, scissorWidth, scissorHeight;
 } DXState;
 
 //----------------------------------------------------------------------------------
@@ -833,6 +834,13 @@ static bool ResetCommands()
     return true;
 }
 
+static void SetRenderTargets()
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CPUOffset(&driver.rtv, driver.frameIndex);
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUOffset(&driver.depthStencil.descriptor, 0);
+    driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, &dsvHandle);
+}
+
 static void UpdateRenderTarget()
 {
     D3D12_RESOURCE_BARRIER barrier = { 0 };
@@ -844,12 +852,32 @@ static void UpdateRenderTarget()
     barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CPUOffset(&driver.rtv, driver.frameIndex);
-    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUOffset(&driver.depthStencil.descriptor, 0);
-    driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, &dsvHandle);
+    SetRenderTargets();
 
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = CPUOffset(&driver.depthStencil.descriptor, 0);
     driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
+}
+
+static void SetViewport()
+{
+    D3D12_VIEWPORT viewport = { 0 };
+    viewport.TopLeftX = (FLOAT)dxState.viewportx;
+    viewport.TopLeftY = (FLOAT)dxState.viewporty;
+    viewport.Width = (FLOAT)dxState.viewportWidth;
+    viewport.Height = (FLOAT)dxState.viewportHeight;
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    driver.commandList->lpVtbl->RSSetViewports(driver.commandList, 1, &viewport);
+}
+
+static void SetScissor()
+{
+    D3D12_RECT scissor = { 0 };
+    scissor.left = dxState.scissorx;
+    scissor.top = dxState.scissory;
+    scissor.right = scissor.left + dxState.scissorWidth;
+    scissor.bottom = scissor.top + dxState.scissorHeight;
+    driver.commandList->lpVtbl->RSSetScissorRects(driver.commandList, 1, &scissor);
 }
 
 static bool InitializeDefaultShader()
@@ -1069,7 +1097,7 @@ static DXRenderBuffer *GetRenderBuffer(unsigned int id)
     return NULL;
 }
 
-static bool UploadData(DXVertexBuffer *buffer, void *data, size_t size, size_t offset)
+static bool PrepUploadData(DXVertexBuffer *buffer, void *data, size_t size)
 {
     unsigned char *bufferData = NULL;
     D3D12_RANGE range = { 0 };
@@ -1081,7 +1109,7 @@ static bool UploadData(DXVertexBuffer *buffer, void *data, size_t size, size_t o
         return false;
     }
 
-    memcpy(bufferData + offset, data, size);
+    memcpy(bufferData, data, size);
 
     D3D12_RESOURCE_BARRIER barrier = { 0 };
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -1092,7 +1120,7 @@ static bool UploadData(DXVertexBuffer *buffer, void *data, size_t size, size_t o
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
     driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
-    driver.commandList->lpVtbl->CopyBufferRegion(driver.commandList, buffer->buffer, offset, buffer->uploadBuffer, offset, size);
+    driver.commandList->lpVtbl->CopyBufferRegion(driver.commandList, buffer->buffer, 0, buffer->uploadBuffer, 0, size);
 
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
@@ -1449,14 +1477,10 @@ void rlOrtho(double left, double right, double bottom, double top, double znear,
 
 void rlViewport(int x, int y, int width, int height)
 {
-    D3D12_VIEWPORT viewport = { 0 };
-    viewport.TopLeftX = (FLOAT)x;
-    viewport.TopLeftY = (FLOAT)y;
-    viewport.Width = (FLOAT)width;
-    viewport.Height = (FLOAT)height;
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-    driver.commandList->lpVtbl->RSSetViewports(driver.commandList, 1, &viewport);
+    dxState.viewportx = x;
+    dxState.viewporty = y;
+    dxState.viewportWidth = width;
+    dxState.viewportHeight = height;
 }
 
 void rlSetClipPlanes(double nearPlane, double farPlane) {}
@@ -1674,12 +1698,10 @@ void rlDisableScissorTest(void) {}
 
 void rlScissor(int x, int y, int width, int height)
 {
-    D3D12_RECT scissor = { 0 };
-    scissor.left = x;
-    scissor.top = y;
-    scissor.right = x + width;
-    scissor.bottom = y + height;
-    driver.commandList->lpVtbl->RSSetScissorRects(driver.commandList, 1, &scissor);
+    dxState.scissorx = x;
+    dxState.scissory = y;
+    dxState.scissorWidth = width;
+    dxState.scissorHeight = height;
 }
 
 void rlEnableWireMode(void) {}
@@ -1997,11 +2019,14 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
     if (dxState.vertexCounter > 0)
     {
-        UploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float), renderBuffer->vertex.view.SizeInBytes);
-        UploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float), renderBuffer->texcoord.view.SizeInBytes);
-        UploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char), renderBuffer->color.view.SizeInBytes);
+        PrepUploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float));
+        PrepUploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float));
+        PrepUploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char));
     }
 
+    SetRenderTargets();
+    SetViewport();
+    SetScissor();
     BindPipeline(dxState.defaultShaderId);
     BindRootSignature();
 
@@ -2031,7 +2056,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         if (dxState.vertexCounter > 0)
         {
-            for (int i = 0, vertexOffset = 0; i < batch->drawCounter; i++)
+            for (int i = 0, vertexOffset = 0, indexOffset = 0; i < batch->drawCounter; i++)
             {
                 rlDrawCall *draw = &batch->draws[i];
 
@@ -2039,14 +2064,14 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
                 if (draw->mode == RL_LINES || draw->mode == RL_TRIANGLES)
                 {
-                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount, 1, dxState.indexOffset, vertexOffset, 0);
-                    dxState.indexOffset += 3;
+                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount, 1, indexOffset, vertexOffset, 0);
+                    indexOffset += 3;
                 }
                 else
                 {
                     const int indexCount = draw->vertexCount / 4 * 6;
-                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, indexCount, 1, dxState.indexOffset, vertexOffset, 0);
-                    dxState.indexOffset += indexCount;
+                    driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, indexCount, 1, indexOffset, vertexOffset, 0);
+                    indexOffset += indexCount;
                 }
 
                 vertexOffset += draw->vertexCount + draw->vertexAlignment;
@@ -2072,6 +2097,10 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         batch->currentBuffer = 0;
     }
+
+    ExecuteCommands();
+    WaitForPreviousFrame();
+    ResetCommands();
 }
 
 void rlSetRenderBatchActive(rlRenderBatch *batch)
@@ -2581,6 +2610,4 @@ void rlPresent()
         renderBuffer->texcoord.view.SizeInBytes = 0;
         renderBuffer->color.view.SizeInBytes = 0;
     }
-
-    dxState.indexOffset = 0;
 }
