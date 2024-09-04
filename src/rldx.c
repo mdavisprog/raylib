@@ -2182,7 +2182,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         if (dxState.vertexCounter > 0)
         {
-            for (int i = 0, vertexOffset = 0, indexOffset = 0; i < batch->drawCounter; i++)
+            for (int i = 0, vertexOffset = 0; i < batch->drawCounter; i++)
             {
                 rlDrawCall *draw = &batch->draws[i];
 
@@ -2201,14 +2201,12 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
                     if (draw->mode == RL_TRIANGLES)
                     {
-                        driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, draw->vertexCount, 1, indexOffset, vertexOffset, 0);
-                        indexOffset += 3;
+                        driver.commandList->lpVtbl->DrawInstanced(driver.commandList, draw->vertexCount, 1, vertexOffset, 0);
                     }
                     else
                     {
                         const int indexCount = draw->vertexCount / 4 * 6;
-                        driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, indexCount, 1, indexOffset, vertexOffset, 0);
-                        indexOffset += indexCount;
+                        driver.commandList->lpVtbl->DrawIndexedInstanced(driver.commandList, indexCount, 1, 0, vertexOffset, 0);
                     }
                 }
 
