@@ -86,6 +86,121 @@ static wchar_t *ToWide(const char *data)
     return result;
 }
 
+static WindowsKey ConvertKey(WPARAM key)
+{
+    switch (key)
+    {
+    //WINDOWSKEY_APOSTROPHE;
+    //WINDOWSKEY_COMMA,
+    //WINDOWSKEY_MINUS,
+    //WINDOWSKEY_PERIOD,
+    //WINDOWSKEY_SLASH,
+    //WINDOWSKEY_SEMICOLON,
+    //WINDOWSKEY_EQUAL,
+    case 0x30: return WINDOWSKEY_ZERO;
+    case 0x31: return WINDOWSKEY_ONE;
+    case 0x32: return WINDOWSKEY_TWO;
+    case 0x33: return WINDOWSKEY_THREE;
+    case 0x34: return WINDOWSKEY_FOUR;
+    case 0x35: return WINDOWSKEY_FIVE;
+    case 0x36: return WINDOWSKEY_SIX;
+    case 0x37: return WINDOWSKEY_SEVEN;
+    case 0x38: return WINDOWSKEY_EIGHT;
+    case 0x39: return WINDOWSKEY_NINE;
+    case 0x41: return WINDOWSKEY_A;
+    case 0x42: return WINDOWSKEY_B;
+    case 0x43: return WINDOWSKEY_C;
+    case 0x44: return WINDOWSKEY_D;
+    case 0x45: return WINDOWSKEY_E;
+    case 0x46: return WINDOWSKEY_F;
+    case 0x47: return WINDOWSKEY_G;
+    case 0x48: return WINDOWSKEY_H;
+    case 0x49: return WINDOWSKEY_I;
+    case 0x4A: return WINDOWSKEY_J;
+    case 0x4B: return WINDOWSKEY_K;
+    case 0x4C: return WINDOWSKEY_L;
+    case 0x4D: return WINDOWSKEY_M;
+    case 0x4E: return WINDOWSKEY_N;
+    case 0x4F: return WINDOWSKEY_O;
+    case 0x50: return WINDOWSKEY_P;
+    case 0x51: return WINDOWSKEY_Q;
+    case 0x52: return WINDOWSKEY_R;
+    case 0x53: return WINDOWSKEY_S;
+    case 0x54: return WINDOWSKEY_T;
+    case 0x55: return WINDOWSKEY_U;
+    case 0x56: return WINDOWSKEY_V;
+    case 0x57: return WINDOWSKEY_W;
+    case 0x58: return WINDOWSKEY_X;
+    case 0x59: return WINDOWSKEY_Y;
+    case 0x5A: return WINDOWSKEY_Z;
+    //WINDOWSKEY_LEFT_BRACKET,
+    //WINDOWSKEY_BACKSLASH,
+    //WINDOWSKEY_RIGHT_BRACKET,
+    //WINDOWSKEY_GRAVE,
+    case VK_SPACE: return WINDOWSKEY_SPACE;
+    case VK_ESCAPE: return WINDOWSKEY_ESCAPE;
+    case VK_RETURN: return WINDOWSKEY_ENTER;
+    case VK_TAB: return WINDOWSKEY_TAB;
+    case VK_BACK: return WINDOWSKEY_BACKSPACE;
+    case VK_INSERT: return WINDOWSKEY_INSERT;
+    case VK_DELETE: return WINDOWSKEY_DELETE;
+    case VK_RIGHT: return WINDOWSKEY_RIGHT;
+    case VK_LEFT: return WINDOWSKEY_LEFT;
+    case VK_DOWN: return WINDOWSKEY_DOWN;
+    case VK_UP: return WINDOWSKEY_UP;
+    case VK_PRIOR: return WINDOWSKEY_PAGE_UP;
+    case VK_NEXT: return WINDOWSKEY_PAGE_DOWN;
+    case VK_HOME: return WINDOWSKEY_HOME;
+    case VK_END: return WINDOWSKEY_END;
+    case VK_CAPITAL: return WINDOWSKEY_CAPS_LOCK;
+    case VK_SCROLL: return WINDOWSKEY_SCROLL_LOCK;
+    case VK_NUMLOCK: return WINDOWSKEY_NUM_LOCK;
+    case VK_SNAPSHOT: return WINDOWSKEY_PRINT_SCREEN;
+    //WINDOWSKEY_PAUSE,
+    case VK_F1: return WINDOWSKEY_F1;
+    case VK_F2: return WINDOWSKEY_F2;
+    case VK_F3: return WINDOWSKEY_F3;
+    case VK_F4: return WINDOWSKEY_F4;
+    case VK_F5: return WINDOWSKEY_F5;
+    case VK_F6: return WINDOWSKEY_F6;
+    case VK_F7: return WINDOWSKEY_F7;
+    case VK_F8: return WINDOWSKEY_F8;
+    case VK_F9: return WINDOWSKEY_F9;
+    case VK_F10: return WINDOWSKEY_F10;
+    case VK_F11: return WINDOWSKEY_F11;
+    case VK_F12: return WINDOWSKEY_F12;
+    case VK_LSHIFT: return WINDOWSKEY_LEFT_SHIFT;
+    case VK_LCONTROL: return WINDOWSKEY_LEFT_CONTROL;
+    case VK_LMENU: return WINDOWSKEY_LEFT_ALT;
+    case VK_LWIN: return WINDOWSKEY_LEFT_SUPER;
+    case VK_RSHIFT: return WINDOWSKEY_RIGHT_SHIFT;
+    case VK_RCONTROL: return WINDOWSKEY_RIGHT_CONTROL;
+    case VK_RMENU: return WINDOWSKEY_RIGHT_ALT;
+    case VK_RWIN: return WINDOWSKEY_RIGHT_SUPER;
+    //WINDOWSKEY_KB_MENU,
+    case VK_NUMPAD0: return WINDOWSKEY_KP_0;
+    case VK_NUMPAD1: return WINDOWSKEY_KP_1;
+    case VK_NUMPAD2: return WINDOWSKEY_KP_2;
+    case VK_NUMPAD3: return WINDOWSKEY_KP_3;
+    case VK_NUMPAD4: return WINDOWSKEY_KP_4;
+    case VK_NUMPAD5: return WINDOWSKEY_KP_5;
+    case VK_NUMPAD6: return WINDOWSKEY_KP_6;
+    case VK_NUMPAD7: return WINDOWSKEY_KP_7;
+    case VK_NUMPAD8: return WINDOWSKEY_KP_8;
+    case VK_NUMPAD9: return WINDOWSKEY_KP_9;
+    case VK_DECIMAL: return WINDOWSKEY_KP_DECIMAL;
+    case VK_DIVIDE: return WINDOWSKEY_KP_DIVIDE;
+    case VK_MULTIPLY: return WINDOWSKEY_KP_MULTIPLY;
+    case VK_SUBTRACT: return WINDOWSKEY_KP_SUBTRACT;
+    case VK_ADD: return WINDOWSKEY_KP_ADD;
+    //WINDOWSKEY_KP_ENTER,
+    //WINDOWSKEY_KP_EQUAL,
+    default: break;
+    }
+
+    return WINDOWSKEY_NULL;
+}
+
 static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -127,6 +242,13 @@ static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         const char pressed = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN || msg == WM_XBUTTONDOWN;
 
         platform.state.mouseButtons[button] = pressed;
+    } break;
+
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    {
+        WindowsKey key = ConvertKey(wParam);
+        platform.state.keys[key] = msg == WM_KEYDOWN;
     } break;
 
     default: break;

@@ -65,15 +65,131 @@ extern CoreData CORE;                   // Global CORE state context
 static PlatformData platform = { 0 };   // Platform specific data
 
 //----------------------------------------------------------------------------------
-// Module Internal Functions Declaration
+// Utility Functions
 //----------------------------------------------------------------------------------
-int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
-bool InitGraphicsDevice(void);   // Initialize graphics device
+
+static KeyboardKey ConvertKey(WindowsKey key)
+{
+    switch (key)
+    {
+    case WINDOWSKEY_APOSTROPHE: return KEY_APOSTROPHE;
+    case WINDOWSKEY_COMMA: return KEY_COMMA;
+    case WINDOWSKEY_MINUS: return KEY_MINUS;
+    case WINDOWSKEY_PERIOD: return KEY_PERIOD;
+    case WINDOWSKEY_SLASH: return KEY_SLASH;
+    case WINDOWSKEY_ZERO: return KEY_ZERO;
+    case WINDOWSKEY_ONE: return KEY_ONE;
+    case WINDOWSKEY_TWO: return KEY_TWO;
+    case WINDOWSKEY_THREE: return KEY_THREE;
+    case WINDOWSKEY_FOUR: return KEY_FOUR;
+    case WINDOWSKEY_FIVE: return KEY_FIVE;
+    case WINDOWSKEY_SIX: return KEY_SIX;
+    case WINDOWSKEY_SEVEN: return KEY_SEVEN;
+    case WINDOWSKEY_EIGHT: return KEY_EIGHT;
+    case WINDOWSKEY_NINE: return KEY_NINE;
+    case WINDOWSKEY_SEMICOLON: return KEY_SEMICOLON;
+    case WINDOWSKEY_EQUAL: return KEY_EQUAL;
+    case WINDOWSKEY_A: return KEY_A;
+    case WINDOWSKEY_B: return KEY_B;
+    case WINDOWSKEY_C: return KEY_C;
+    case WINDOWSKEY_D: return KEY_D;
+    case WINDOWSKEY_E: return KEY_E;
+    case WINDOWSKEY_F: return KEY_F;
+    case WINDOWSKEY_G: return KEY_G;
+    case WINDOWSKEY_H: return KEY_H;
+    case WINDOWSKEY_I: return KEY_I;
+    case WINDOWSKEY_J: return KEY_J;
+    case WINDOWSKEY_K: return KEY_K;
+    case WINDOWSKEY_L: return KEY_L;
+    case WINDOWSKEY_M: return KEY_M;
+    case WINDOWSKEY_N: return KEY_N;
+    case WINDOWSKEY_O: return KEY_O;
+    case WINDOWSKEY_P: return KEY_P;
+    case WINDOWSKEY_Q: return KEY_Q;
+    case WINDOWSKEY_R: return KEY_R;
+    case WINDOWSKEY_S: return KEY_S;
+    case WINDOWSKEY_T: return KEY_T;
+    case WINDOWSKEY_U: return KEY_U;
+    case WINDOWSKEY_V: return KEY_V;
+    case WINDOWSKEY_W: return KEY_W;
+    case WINDOWSKEY_X: return KEY_X;
+    case WINDOWSKEY_Y: return KEY_Y;
+    case WINDOWSKEY_Z: return KEY_Z;
+    case WINDOWSKEY_LEFT_BRACKET: return KEY_LEFT_BRACKET;
+    case WINDOWSKEY_BACKSLASH: return KEY_BACKSLASH;
+    case WINDOWSKEY_RIGHT_BRACKET: return KEY_RIGHT_BRACKET;
+    case WINDOWSKEY_GRAVE: return KEY_GRAVE;
+    case WINDOWSKEY_SPACE: return KEY_SPACE;
+    case WINDOWSKEY_ESCAPE: return KEY_ESCAPE;
+    case WINDOWSKEY_ENTER: return KEY_ENTER;
+    case WINDOWSKEY_TAB: return KEY_TAB;
+    case WINDOWSKEY_BACKSPACE: return KEY_BACKSPACE;
+    case WINDOWSKEY_INSERT: return KEY_INSERT;
+    case WINDOWSKEY_DELETE: return KEY_DELETE;
+    case WINDOWSKEY_RIGHT: return KEY_RIGHT;
+    case WINDOWSKEY_LEFT: return KEY_LEFT;
+    case WINDOWSKEY_DOWN: return KEY_DOWN;
+    case WINDOWSKEY_UP: return KEY_UP;
+    case WINDOWSKEY_PAGE_UP: return KEY_PAGE_UP;
+    case WINDOWSKEY_PAGE_DOWN: return KEY_PAGE_DOWN;
+    case WINDOWSKEY_HOME: return KEY_HOME;
+    case WINDOWSKEY_END: return KEY_END;
+    case WINDOWSKEY_CAPS_LOCK: return KEY_CAPS_LOCK;
+    case WINDOWSKEY_SCROLL_LOCK: return KEY_SCROLL_LOCK;
+    case WINDOWSKEY_NUM_LOCK: return KEY_NUM_LOCK;
+    case WINDOWSKEY_PRINT_SCREEN: return KEY_PRINT_SCREEN;
+    case WINDOWSKEY_PAUSE: return KEY_PAUSE;
+    case WINDOWSKEY_F1: return KEY_F1;
+    case WINDOWSKEY_F2: return KEY_F2;
+    case WINDOWSKEY_F3: return KEY_F3;
+    case WINDOWSKEY_F4: return KEY_F4;
+    case WINDOWSKEY_F5: return KEY_F5;
+    case WINDOWSKEY_F6: return KEY_F6;
+    case WINDOWSKEY_F7: return KEY_F7;
+    case WINDOWSKEY_F8: return KEY_F8;
+    case WINDOWSKEY_F9: return KEY_F9;
+    case WINDOWSKEY_F10: return KEY_F10;
+    case WINDOWSKEY_F11: return KEY_F11;
+    case WINDOWSKEY_F12: return KEY_F12;
+    case WINDOWSKEY_LEFT_SHIFT: return KEY_LEFT_SHIFT;
+    case WINDOWSKEY_LEFT_CONTROL: return KEY_LEFT_CONTROL;
+    case WINDOWSKEY_LEFT_ALT: return KEY_LEFT_ALT;
+    case WINDOWSKEY_LEFT_SUPER: return KEY_LEFT_SUPER;
+    case WINDOWSKEY_RIGHT_SHIFT: return KEY_RIGHT_SHIFT;
+    case WINDOWSKEY_RIGHT_CONTROL: return KEY_RIGHT_CONTROL;
+    case WINDOWSKEY_RIGHT_ALT: return KEY_RIGHT_ALT;
+    case WINDOWSKEY_RIGHT_SUPER: return KEY_RIGHT_SUPER;
+    case WINDOWSKEY_KB_MENU: return KEY_KB_MENU;
+    case WINDOWSKEY_KP_0: return KEY_KP_0;
+    case WINDOWSKEY_KP_1: return KEY_KP_1;
+    case WINDOWSKEY_KP_2: return KEY_KP_2;
+    case WINDOWSKEY_KP_3: return KEY_KP_3;
+    case WINDOWSKEY_KP_4: return KEY_KP_4;
+    case WINDOWSKEY_KP_5: return KEY_KP_5;
+    case WINDOWSKEY_KP_6: return KEY_KP_6;
+    case WINDOWSKEY_KP_7: return KEY_KP_7;
+    case WINDOWSKEY_KP_8: return KEY_KP_8;
+    case WINDOWSKEY_KP_9: return KEY_KP_9;
+    case WINDOWSKEY_KP_DECIMAL: return KEY_KP_DECIMAL;
+    case WINDOWSKEY_KP_DIVIDE: return KEY_KP_DIVIDE;
+    case WINDOWSKEY_KP_MULTIPLY: return KEY_KP_MULTIPLY;
+    case WINDOWSKEY_KP_SUBTRACT: return KEY_KP_SUBTRACT;
+    case WINDOWSKEY_KP_ADD: return KEY_KP_ADD;
+    case WINDOWSKEY_KP_ENTER: return KEY_KP_ENTER;
+    case WINDOWSKEY_KP_EQUAL: return KEY_KP_EQUAL;
+    case WINDOWSKEY_NULL:
+    default: break;
+    }
+
+    return KEY_NULL;
+}
 
 //----------------------------------------------------------------------------------
-// Module Functions Declaration
+// Module Internal Functions Declaration
 //----------------------------------------------------------------------------------
-// NOTE: Functions declaration is provided by raylib.h
+
+int InitPlatform(void);          // Initialize platform (graphics, inputs and more)
+bool InitGraphicsDevice(void);   // Initialize graphics device
 
 //----------------------------------------------------------------------------------
 // Module Functions Definition: Window and Graphics Device
@@ -415,6 +531,27 @@ void PollInputEvents(void)
     for (int i = 0; i < MAX_MOUSE_BUTTONS; i++)
     {
         CORE.Input.Mouse.currentButtonState[i] = state->mouseButtons[i];
+    }
+
+    for (int i = 0; i < WINDOWSKEY_MAX; i++)
+    {
+        KeyboardKey key = ConvertKey(i);
+
+        if (key != KEY_NULL)
+        {
+            CORE.Input.Keyboard.currentKeyState[key] = state->keys[i];
+
+            if ((CORE.Input.Keyboard.currentKeyState[key] == 0) && (CORE.Input.Keyboard.keyPressedQueueCount < MAX_KEY_PRESSED_QUEUE))
+            {
+                CORE.Input.Keyboard.keyPressedQueue[CORE.Input.Keyboard.keyPressedQueueCount] = key;
+                CORE.Input.Keyboard.keyPressedQueueCount++;
+            }
+
+            if (key == CORE.Input.Keyboard.exitKey && state->keys[i])
+            {
+                CORE.Window.shouldClose = true;
+            }
+        }
     }
 }
 
