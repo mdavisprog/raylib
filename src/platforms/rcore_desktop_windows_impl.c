@@ -306,7 +306,14 @@ int Windows_CreateWindow(const char* title, int width, int height)
     wTitle[length] = 0;
 
     DWORD style = WS_OVERLAPPEDWINDOW;
-    platform.handle = CreateWindowExW(0, WND_CLASS_NAME, wTitle, style, CW_USEDEFAULT, CW_USEDEFAULT, width, height, NULL, NULL, NULL, NULL);
+    DWORD exStyle = WS_EX_APPWINDOW;
+
+    RECT rect = { 0, 0, width, height };
+    AdjustWindowRectEx(&rect, style, FALSE, exStyle);
+    width = rect.right - rect.left;
+    height = rect.bottom - rect.top;
+
+    platform.handle = CreateWindowExW(exStyle, WND_CLASS_NAME, wTitle, style, CW_USEDEFAULT, CW_USEDEFAULT, width, height, NULL, NULL, NULL, NULL);
     free(wTitle);
 
     if (platform.handle == NULL)
