@@ -129,6 +129,7 @@ typedef struct {
     unsigned int id;
     DXVertexBuffer vertex;
     DXVertexBuffer texcoord;
+    DXVertexBuffer normal;
     DXVertexBuffer color;
     ID3D12Resource *index;
     D3D12_INDEX_BUFFER_VIEW indexView;
@@ -941,7 +942,7 @@ static unsigned int CreatePipeline(unsigned int vShaderId, unsigned int fShaderI
         return 0;
     }
 
-    D3D12_INPUT_ELEMENT_DESC elements[3] = { {0}, {0}, {0} };
+    D3D12_INPUT_ELEMENT_DESC elements[4] = { {0}, {0}, {0}, {0} };
     elements[0].SemanticName = "POSITION";
     elements[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
     elements[0].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
@@ -953,11 +954,17 @@ static unsigned int CreatePipeline(unsigned int vShaderId, unsigned int fShaderI
     elements[1].Format = DXGI_FORMAT_R32G32_FLOAT;
     elements[1].InputSlot = 1;
 
-    elements[2].SemanticName = "COLOR";
+    elements[2].SemanticName = "NORMAL";
     elements[2].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
     elements[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-    elements[2].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    elements[2].Format = DXGI_FORMAT_R32G32B32_FLOAT;
     elements[2].InputSlot = 2;
+
+    elements[3].SemanticName = "COLOR";
+    elements[3].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+    elements[3].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+    elements[3].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    elements[3].InputSlot = 3;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = { 0 };
     graphicsDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
@@ -1077,13 +1084,13 @@ static bool InitializeDefaultShader()
     "   int pad[6];                         \n"
     "}                                      \n"
 
-    "PSInput Main(float4 position : POSITION, float2 uv : TEXCOORD, float4 color : COLOR)   \n"
-    "{                                                                                      \n"
-    "   PSInput result;                                                                     \n"
-    "   result.position = mul(mvp, float4(position.xyz, 1.0));                              \n"
-    "   result.uv = uv;                                                                     \n"
-    "   result.color = color;                                                               \n"
-    "   return result;                                                                      \n"
+    "PSInput Main(float4 position : POSITION, float2 uv : TEXCOORD, float4 normal : NORMAL, float4 color : COLOR)  \n"
+    "{                                                                                                             \n"
+    "   PSInput result;                                                                                            \n"
+    "   result.position = mul(mvp, float4(position.xyz, 1.0));                                                     \n"
+    "   result.uv = uv;                                                                                            \n"
+    "   result.color = color;                                                                                      \n"
+    "   return result;                                                                                             \n"
     "}";
 
     const char *fragmentShaderCode =
@@ -1171,6 +1178,7 @@ static void DestroyRenderBuffer(DXRenderBuffer *renderBuffer)
 {
     DestroyVertexBuffer(&renderBuffer->vertex);
     DestroyVertexBuffer(&renderBuffer->texcoord);
+    DestroyVertexBuffer(&renderBuffer->normal);
     DestroyVertexBuffer(&renderBuffer->color);
     DXRELEASE(renderBuffer->index);
 }
@@ -1178,6 +1186,7 @@ static void DestroyRenderBuffer(DXRenderBuffer *renderBuffer)
 static unsigned int CreateRenderBuffer(
     UINT64 vertexBufferSize, UINT vertexBufferStride,
     UINT64 texcoordBufferSize, UINT texcoordBufferStride,
+    UINT64 normalBufferSize, UINT normalBufferStride,
     UINT64 colorBufferSize, UINT colorBufferStride,
     UINT64 indexBufferSize)
 {
@@ -1194,6 +1203,14 @@ static unsigned int CreateRenderBuffer(
     {
         DestroyRenderBuffer(&buffer);
         DXTRACELOG(RL_LOG_ERROR, "Failed to create texcoord buffer resource!");
+        return 0;
+    }
+
+    buffer.normal = CreateVertexBuffer(normalBufferSize, normalBufferStride);
+    if (buffer.normal.buffer == NULL)
+    {
+        DestroyRenderBuffer(&buffer);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create normal buffer resource!");
         return 0;
     }
 
@@ -2076,7 +2093,7 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
 
     for (int i = 0; i < numBuffers; i++)
     {
-        batch.vertexBuffer[i].vaoId = CreateRenderBuffer(verticesSize, 3 * sizeof(float), texcoordsSize, 2 * sizeof(float), colorsSize, 4 * sizeof(unsigned char), indicesSize);
+        batch.vertexBuffer[i].vaoId = CreateRenderBuffer(verticesSize, 3 * sizeof(float), texcoordsSize, 2 * sizeof(float), normalsSize, 3 * sizeof(float), colorsSize, 4 * sizeof(unsigned char), indicesSize);
         DXRenderBuffer *renderBuffer = GetRenderBuffer(batch.vertexBuffer[i].vaoId);
 
         unsigned char *indexData = NULL;
@@ -2150,6 +2167,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         PrepUploadData(&renderBuffer->vertex, vertexBuffer->vertices, dxState.vertexCounter * 3 * sizeof(float));
         PrepUploadData(&renderBuffer->texcoord, vertexBuffer->texcoords, dxState.vertexCounter * 2 * sizeof(float));
+        PrepUploadData(&renderBuffer->normal, vertexBuffer->normals, dxState.vertexCounter * 3 * sizeof(float));
         PrepUploadData(&renderBuffer->color, vertexBuffer->colors, dxState.vertexCounter * 4 * sizeof(unsigned char));
     }
 
@@ -2172,7 +2190,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
 
     if (dxState.vertexCounter > 0)
     {
-        D3D12_VERTEX_BUFFER_VIEW views[3] = { renderBuffer->vertex.view, renderBuffer->texcoord.view, renderBuffer->color.view };
+        D3D12_VERTEX_BUFFER_VIEW views[4] = { renderBuffer->vertex.view, renderBuffer->texcoord.view, renderBuffer->normal.view, renderBuffer->color.view };
         driver.commandList->lpVtbl->IASetVertexBuffers(driver.commandList, 0, _countof(views), views);
         driver.commandList->lpVtbl->IASetIndexBuffer(driver.commandList, &renderBuffer->indexView);
     }
@@ -2625,6 +2643,7 @@ void rlPresent()
         DXRenderBuffer *renderBuffer = (DXRenderBuffer*)VectorGet(&driver.renderBuffers.pool, i);
         renderBuffer->vertex.view.SizeInBytes = 0;
         renderBuffer->texcoord.view.SizeInBytes = 0;
+        renderBuffer->normal.view.SizeInBytes = 0;
         renderBuffer->color.view.SizeInBytes = 0;
     }
 }
