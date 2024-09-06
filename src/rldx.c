@@ -1303,7 +1303,7 @@ static bool PrepUploadData(DXVertexBuffer *buffer, void *data, size_t size)
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
     driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
 
-    buffer->view.SizeInBytes += (UINT)size;
+    buffer->view.SizeInBytes = (UINT)size;
 
     return true;
 }
@@ -2635,15 +2635,4 @@ void rlPresent()
 
     // Prepare render target for next frame
     UpdateRenderTarget();
-    rlViewport(0, 0, dxState.width, dxState.height);
-    rlScissor(0, 0, dxState.width, dxState.height);
-
-    for (int i = 0; i < driver.renderBuffers.pool.length; i++)
-    {
-        DXRenderBuffer *renderBuffer = (DXRenderBuffer*)VectorGet(&driver.renderBuffers.pool, i);
-        renderBuffer->vertex.view.SizeInBytes = 0;
-        renderBuffer->texcoord.view.SizeInBytes = 0;
-        renderBuffer->normal.view.SizeInBytes = 0;
-        renderBuffer->color.view.SizeInBytes = 0;
-    }
 }
