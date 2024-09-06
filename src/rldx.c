@@ -1400,6 +1400,8 @@ static DXGI_FORMAT ToDXGIFormat(rlPixelFormat format)
     switch (format)
     {
     case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return DXGI_FORMAT_B4G4R4A4_UNORM;
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8:
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: return DXGI_FORMAT_R8G8B8A8_UNORM;
     default: break;
     }
 
@@ -1411,6 +1413,8 @@ static int StrideInBytes(rlPixelFormat format)
     switch (format)
     {
     case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return 2;
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8: return 3;
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: return 4;
     default: break;
     }
 
@@ -2352,10 +2356,54 @@ void rlDrawVertexArrayElements(int offset, int count, const void *buffer) {}
 void rlDrawVertexArrayInstanced(int offset, int count, int instances) {}
 void rlDrawVertexArrayElementsInstanced(int offset, int count, const void *buffer, int instances) {}
 
+typedef struct {
+    void *data;
+    bool needsFree;
+    int format;
+} TransformedData;
+
+static TransformedData TransformData(const void *data, int width, int height, int format)
+{
+    TransformedData result = { 0 };
+    result.data = (void*)data;
+    result.needsFree = false;
+    result.format = format;
+
+    if (format == RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8)
+    {
+        unsigned char *src = (char*)data;
+        unsigned char *dst = (char*)RL_MALLOC(width * height * 4 * sizeof(char));
+
+        int srcOffset = 0;
+        int dstOffset = 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                dst[dstOffset + 0] = src[srcOffset + 0];
+                dst[dstOffset + 1] = src[srcOffset + 1];
+                dst[dstOffset + 2] = src[srcOffset + 2];
+                dst[dstOffset + 3] = 255;
+
+                srcOffset += 3;
+                dstOffset += 4;
+            }
+        }
+
+        result.data = dst;
+        result.needsFree = true;
+        result.format = RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    }
+
+    return result;
+}
+
 // Textures management
 unsigned int rlLoadTexture(const void *data, int width, int height, int format, int mipmapCount)
 {
     DXTexture texture = { 0 };
+
+    TransformedData transformedData = TransformData(data, width, height, format);
 
     D3D12_HEAP_PROPERTIES heap = { 0 };
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -2371,7 +2419,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     description.Height = height;
     description.DepthOrArraySize = 1;
     description.MipLevels = 1;
-    description.Format = ToDXGIFormat(format);
+    description.Format = ToDXGIFormat(transformedData.format);
     description.SampleDesc.Count = 1;
     description.SampleDesc.Quality = 0;
     description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -2421,8 +2469,8 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     memcpyDest.SlicePitch = (UINT64)layouts.Footprint.RowPitch * (UINT64)numRows;
 
     D3D12_SUBRESOURCE_DATA textureData = { 0 };
-    textureData.pData = data;
-    textureData.RowPitch = width * StrideInBytes(format);
+    textureData.pData = transformedData.data;
+    textureData.RowPitch = width * StrideInBytes(transformedData.format);
     textureData.SlicePitch = textureData.RowPitch * height;
 
     for (unsigned int slice = 0; slice < layouts.Footprint.Depth; slice++)
@@ -2474,6 +2522,11 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     texture.height = height;
 
     VectorPush(&driver.textures.pool, &texture);
+
+    if (transformedData.needsFree)
+    {
+        RL_FREE(transformedData.data);
+    }
 
     return texture.id;
 }
