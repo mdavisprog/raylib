@@ -905,6 +905,7 @@ static bool RemoveShader(unsigned int id)
 
         if (shader->id == id)
         {
+            DXRELEASE(shader->data);
             VectorRemove(&driver.shaders.pool, i);
             return true;
         }
@@ -1034,12 +1035,6 @@ static unsigned int CreatePipeline(unsigned int vShaderId, unsigned int fShaderI
         VectorPush(&driver.pipelines.pool, &pipeline);
     }
 
-    DXRELEASE(vShader->data);
-    DXRELEASE(vShader->data);
-
-    RemoveShader(vShader->id);
-    RemoveShader(fShader->id);
-
     return pipeline.id;
 }
 
@@ -1066,6 +1061,22 @@ static void BindPipeline(unsigned int id)
     {
         driver.commandList->lpVtbl->SetPipelineState(driver.commandList, pipeline->state);
     }
+}
+
+static bool RemovePipeline(unsigned int id)
+{
+    for (size_t i = 0; i < driver.pipelines.pool.length; i++)
+    {
+        DXPipeline *pipeline = (DXPipeline*)VectorGet(&driver.pipelines.pool, i);
+
+        if (pipeline->id == id)
+        {
+            VectorRemove(&driver.pipelines.pool, i);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool InitializeDefaultShader()
@@ -1107,11 +1118,14 @@ static bool InitializeDefaultShader()
     "   return g_Texture.Sample(g_Sampler, input.uv) * input.color; \n"
     "}";
 
-    dxState.defaultShaderId = rlLoadShaderCode(vertexShaderCode, fragmentShaderCode);
-
     unsigned int vShaderId = rlCompileShader(vertexShaderCode, RL_VERTEX_SHADER);
     unsigned int fShaderId = rlCompileShader(fragmentShaderCode, RL_FRAGMENT_SHADER);
+
+    dxState.defaultShaderId = CreatePipeline(vShaderId, fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
     dxState.defaultLineShaderId = CreatePipeline(vShaderId, fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
+
+    RemoveShader(vShaderId);
+    RemoveShader(fShaderId);
 
     return dxState.defaultShaderId != 0 && dxState.defaultLineShaderId;
 }
@@ -2596,10 +2610,20 @@ unsigned int rlCompileShader(const char *shaderCode, int type)
 
 unsigned int rlLoadShaderProgram(unsigned int vShaderId, unsigned int fShaderId)
 {
-    return CreatePipeline(vShaderId, fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    unsigned int result = CreatePipeline(vShaderId, fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+
+    RemoveShader(vShaderId);
+    RemoveShader(fShaderId);
+
+    return result;
 }
 
-void rlUnloadShaderProgram(unsigned int id) {}
+void rlUnloadShaderProgram(unsigned int id)
+{
+    // In DirectX 12, Pipeline State Objects are considered shader programs.
+    RemovePipeline(id);
+}
+
 int rlGetLocationUniform(unsigned int shaderId, const char *uniformName) { return 0; }
 int rlGetLocationAttrib(unsigned int shaderId, const char *attribName) { return 0; }
 void rlSetUniform(int locIndex, const void *value, int uniformType, int count) {}
