@@ -193,6 +193,7 @@ typedef struct {
 typedef struct {
     unsigned int defaultTextureId;
     unsigned int defaultShaderId;
+    unsigned int shaderBlendModeIds[8]; // One for each blend mode. defaultShaderId is the 0 element.
     unsigned int defaultLineShaderId;
     rlRenderBatch defaultBatch;
     rlRenderBatch *currentBatch;
@@ -206,6 +207,7 @@ typedef struct {
     int height;
     int viewportx, viewporty, viewportWidth, viewportHeight;
     int scissorx, scissory, scissorWidth, scissorHeight;
+    int currentBlendMode;
 } DXState;
 
 //----------------------------------------------------------------------------------
@@ -914,7 +916,111 @@ static bool RemoveShader(unsigned int id)
     return false;
 }
 
-static unsigned int CreatePipeline(unsigned int vShaderId, unsigned int fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE topology)
+static D3D12_BLEND_DESC CreateBlendDesc(rlBlendMode mode)
+{
+    D3D12_BLEND srcBlend = D3D12_BLEND_SRC_ALPHA;
+    D3D12_BLEND dstBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    D3D12_BLEND_OP blendOp = D3D12_BLEND_OP_ADD;
+    D3D12_BLEND srcBlendAlpha = D3D12_BLEND_ONE;
+    D3D12_BLEND dstBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    D3D12_BLEND_OP blendOpAlpha = D3D12_BLEND_OP_ADD;
+
+    switch (mode)
+    {
+    case RL_BLEND_ADDITIVE:
+    {
+        dstBlend = D3D12_BLEND_ONE;
+    } break;
+
+    case RL_BLEND_MULTIPLIED:
+    {
+        srcBlend = D3D12_BLEND_DEST_COLOR;
+        dstBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    } break;
+
+    case RL_BLEND_ADD_COLORS:
+    {
+        srcBlend = D3D12_BLEND_ONE;
+        dstBlend = D3D12_BLEND_ONE;
+    } break;
+
+    case RL_BLEND_SUBTRACT_COLORS:
+    {
+        srcBlend = D3D12_BLEND_ONE;
+        dstBlend = D3D12_BLEND_ONE;
+        blendOp = D3D12_BLEND_OP_SUBTRACT;
+    } break;
+
+    case RL_BLEND_ALPHA_PREMULTIPLY:
+    {
+        srcBlend = D3D12_BLEND_ONE;
+        dstBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    } break;
+
+    case RL_BLEND_CUSTOM: TRACELOG(RL_LOG_ERROR, "RL_BLEND_CUSTOM not implemented!"); break;
+    case RL_BLEND_CUSTOM_SEPARATE: TRACELOG(RL_LOG_ERROR, "RL_BLEND_CUSTOM_SEPARATE not implemented!"); break;
+
+    case RL_BLEND_ALPHA:
+    default: break;
+    }
+
+    D3D12_BLEND_DESC desc = { 0 };
+    desc.AlphaToCoverageEnable = FALSE;
+    desc.IndependentBlendEnable = FALSE;
+    desc.RenderTarget[0].BlendEnable = TRUE;
+    desc.RenderTarget[0].LogicOpEnable = FALSE;
+    desc.RenderTarget[0].SrcBlend = srcBlend;
+    desc.RenderTarget[0].DestBlend = dstBlend;
+    desc.RenderTarget[0].BlendOp = blendOp;
+    desc.RenderTarget[0].SrcBlendAlpha = srcBlendAlpha;
+    desc.RenderTarget[0].DestBlendAlpha = dstBlendAlpha;
+    desc.RenderTarget[0].BlendOpAlpha = blendOpAlpha;
+    desc.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
+    desc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    return desc;
+}
+
+static D3D12_GRAPHICS_PIPELINE_STATE_DESC CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE topology, rlBlendMode blendMode)
+{
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = { 0 };
+    graphicsDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    graphicsDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    graphicsDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    graphicsDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    graphicsDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    graphicsDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    graphicsDesc.RasterizerState.DepthClipEnable = TRUE;
+    graphicsDesc.RasterizerState.MultisampleEnable = TRUE;
+    graphicsDesc.RasterizerState.AntialiasedLineEnable = TRUE;
+    graphicsDesc.RasterizerState.ForcedSampleCount = 0;
+    graphicsDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    graphicsDesc.BlendState = CreateBlendDesc(blendMode);
+
+    graphicsDesc.SampleMask = UINT_MAX;
+    graphicsDesc.PrimitiveTopologyType = topology;
+    graphicsDesc.NumRenderTargets = 1;
+    graphicsDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    graphicsDesc.SampleDesc.Count = 1;
+
+    graphicsDesc.DepthStencilState.DepthEnable = TRUE;
+    graphicsDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    graphicsDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    graphicsDesc.DepthStencilState.StencilEnable = TRUE;
+    graphicsDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    graphicsDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    graphicsDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    graphicsDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    graphicsDesc.DepthStencilState.BackFace = graphicsDesc.DepthStencilState.FrontFace;
+    graphicsDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+    return graphicsDesc;
+}
+
+static unsigned int CreatePipeline(unsigned int vShaderId, unsigned int fShaderId, D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc)
 {
     DXShader *vShader = GetShader(vShaderId);
     DXShader *fShader = GetShader(fShaderId);
@@ -967,41 +1073,6 @@ static unsigned int CreatePipeline(unsigned int vShaderId, unsigned int fShaderI
     elements[3].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     elements[3].InputSlot = 3;
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = { 0 };
-    graphicsDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    graphicsDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    graphicsDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    graphicsDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    graphicsDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    graphicsDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    graphicsDesc.RasterizerState.DepthClipEnable = TRUE;
-    graphicsDesc.RasterizerState.MultisampleEnable = TRUE;
-    graphicsDesc.RasterizerState.AntialiasedLineEnable = TRUE;
-    graphicsDesc.RasterizerState.ForcedSampleCount = 0;
-    graphicsDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-    graphicsDesc.BlendState.AlphaToCoverageEnable = FALSE;
-    graphicsDesc.BlendState.IndependentBlendEnable = FALSE;
-    for (UINT I = 0; I < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++I)
-    {
-        graphicsDesc.BlendState.RenderTarget[I].BlendEnable = TRUE;
-        graphicsDesc.BlendState.RenderTarget[I].LogicOpEnable = FALSE;
-        graphicsDesc.BlendState.RenderTarget[I].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-        graphicsDesc.BlendState.RenderTarget[I].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-        graphicsDesc.BlendState.RenderTarget[I].BlendOp = D3D12_BLEND_OP_ADD;
-        graphicsDesc.BlendState.RenderTarget[I].SrcBlendAlpha = D3D12_BLEND_ONE;
-        graphicsDesc.BlendState.RenderTarget[I].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        graphicsDesc.BlendState.RenderTarget[I].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        graphicsDesc.BlendState.RenderTarget[I].LogicOp = D3D12_LOGIC_OP_NOOP;
-        graphicsDesc.BlendState.RenderTarget[I].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    }
-
-    graphicsDesc.SampleMask = UINT_MAX;
-    graphicsDesc.PrimitiveTopologyType = topology;
-    graphicsDesc.NumRenderTargets = 1;
-    graphicsDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    graphicsDesc.SampleDesc.Count = 1;
-
     graphicsDesc.InputLayout.pInputElementDescs = elements;
     graphicsDesc.InputLayout.NumElements = _countof(elements);
     graphicsDesc.pRootSignature = driver.rootSignature;
@@ -1009,19 +1080,6 @@ static unsigned int CreatePipeline(unsigned int vShaderId, unsigned int fShaderI
     graphicsDesc.VS.BytecodeLength = vShader->data->lpVtbl->GetBufferSize(vShader->data);
     graphicsDesc.PS.pShaderBytecode = fShader->data->lpVtbl->GetBufferPointer(fShader->data);
     graphicsDesc.PS.BytecodeLength = fShader->data->lpVtbl->GetBufferSize(fShader->data);
-
-    graphicsDesc.DepthStencilState.DepthEnable = TRUE;
-    graphicsDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    graphicsDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    graphicsDesc.DepthStencilState.StencilEnable = TRUE;
-    graphicsDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
-    graphicsDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
-    graphicsDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
-    graphicsDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
-    graphicsDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
-    graphicsDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    graphicsDesc.DepthStencilState.BackFace = graphicsDesc.DepthStencilState.FrontFace;
-    graphicsDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
     DXPipeline pipeline = { 0 };
     HRESULT result = driver.device->lpVtbl->CreateGraphicsPipelineState(driver.device, &graphicsDesc, &IID_ID3D12PipelineState, (LPVOID*)&pipeline.state);
@@ -1121,8 +1179,17 @@ static bool InitializeDefaultShader()
     unsigned int vShaderId = rlCompileShader(vertexShaderCode, RL_VERTEX_SHADER);
     unsigned int fShaderId = rlCompileShader(fragmentShaderCode, RL_FRAGMENT_SHADER);
 
-    dxState.defaultShaderId = CreatePipeline(vShaderId, fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
-    dxState.defaultLineShaderId = CreatePipeline(vShaderId, fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE);
+    dxState.shaderBlendModeIds[0] = CreatePipeline(vShaderId, fShaderId, CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, RL_BLEND_ALPHA));
+    dxState.shaderBlendModeIds[1] = CreatePipeline(vShaderId, fShaderId, CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, RL_BLEND_ADDITIVE));
+    dxState.shaderBlendModeIds[2] = CreatePipeline(vShaderId, fShaderId, CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, RL_BLEND_MULTIPLIED));
+    dxState.shaderBlendModeIds[3] = CreatePipeline(vShaderId, fShaderId, CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, RL_BLEND_ADD_COLORS));
+    dxState.shaderBlendModeIds[4] = CreatePipeline(vShaderId, fShaderId, CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, RL_BLEND_SUBTRACT_COLORS));
+    dxState.shaderBlendModeIds[5] = CreatePipeline(vShaderId, fShaderId, CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, RL_BLEND_ALPHA_PREMULTIPLY));
+    dxState.shaderBlendModeIds[6] = dxState.shaderBlendModeIds[0];
+    dxState.shaderBlendModeIds[7] = dxState.shaderBlendModeIds[0];
+    dxState.defaultLineShaderId = CreatePipeline(vShaderId, fShaderId, CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE, RL_BLEND_ALPHA));
+    dxState.defaultShaderId = dxState.shaderBlendModeIds[0];
+    dxState.currentBlendMode = RL_BLEND_ALPHA;
 
     RemoveShader(vShaderId);
     RemoveShader(fShaderId);
@@ -1888,7 +1955,16 @@ void rlClearColor(unsigned char r, unsigned char g, unsigned char b, unsigned ch
 
 void rlClearScreenBuffers(void) {}
 void rlCheckErrors(void) {}
-void rlSetBlendMode(int mode) {}
+
+void rlSetBlendMode(int mode)
+{
+    if (dxState.currentBlendMode != mode)
+    {
+        rlDrawRenderBatch(dxState.currentBatch);
+        dxState.currentBlendMode = mode;
+    }
+}
+
 void rlSetBlendFactors(int glSrcFactor, int glDstFactor, int glEquation) {}
 void rlSetBlendFactorsSeparate(int glSrcRGB, int glDstRGB, int glSrcAlpha, int glDstAlpha, int glEqRGB, int glEqAlpha) {}
 
@@ -2232,7 +2308,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
                 }
                 else
                 {
-                    BindPipeline(dxState.defaultShaderId);
+                    BindPipeline(dxState.shaderBlendModeIds[dxState.currentBlendMode]);
                     driver.commandList->lpVtbl->IASetPrimitiveTopology(driver.commandList, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
                     if (draw->mode == RL_TRIANGLES)
@@ -2610,7 +2686,9 @@ unsigned int rlCompileShader(const char *shaderCode, int type)
 
 unsigned int rlLoadShaderProgram(unsigned int vShaderId, unsigned int fShaderId)
 {
-    unsigned int result = CreatePipeline(vShaderId, fShaderId, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE);
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC graphicsDesc = CreatePipelineDesc(D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, RL_BLEND_ALPHA);
+
+    unsigned int result = CreatePipeline(vShaderId, fShaderId, graphicsDesc);
 
     RemoveShader(vShaderId);
     RemoveShader(fShaderId);
