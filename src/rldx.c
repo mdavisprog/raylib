@@ -857,7 +857,10 @@ static void UpdateRenderTarget()
     driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
 
     SetRenderTargets();
+}
 
+static void ClearDepthStencil()
+{
     D3D12_CPU_DESCRIPTOR_HANDLE dsv = CPUOffset(&driver.depthStencil.descriptor, 0);
     driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
 }
@@ -2266,6 +2269,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     }
 
     SetRenderTargets();
+    ClearDepthStencil();
     SetViewport();
     SetScissor();
     BindRootSignature();
