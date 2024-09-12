@@ -217,6 +217,8 @@ typedef struct {
 static const int constantBufferIndex = NUM_DESCRIPTORS - 1;
 static DriverData driver = { 0 };
 static DXState dxState = { 0 };
+static double cullDistanceNear = RL_CULL_DISTANCE_NEAR;
+static double cullDistanceFar = RL_CULL_DISTANCE_FAR;
 
 //----------------------------------------------------------------------------------
 // Utility functions
@@ -1717,9 +1719,21 @@ void rlViewport(int x, int y, int width, int height)
     dxState.viewportHeight = height;
 }
 
-void rlSetClipPlanes(double nearPlane, double farPlane) {}
-double rlGetCullDistanceNear(void) { return 0.0; }
-double rlGetCullDistanceFar(void) { return 0.0; }
+void rlSetClipPlanes(double nearPlane, double farPlane)
+{
+    cullDistanceNear = nearPlane;
+    cullDistanceFar = farPlane;
+}
+
+double rlGetCullDistanceNear(void)
+{
+    return cullDistanceNear;
+}
+
+double rlGetCullDistanceFar(void)
+{
+    return cullDistanceFar;
+}
 
 //------------------------------------------------------------------------------------
 // Functions Declaration - Vertex level operations
