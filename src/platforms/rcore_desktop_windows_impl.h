@@ -149,6 +149,7 @@ typedef struct WindowsState {
     int shouldClose;
     int mouseX;
     int mouseY;
+    int mouseWheel;
     char mouseButtons[8];
     char keys[WINDOWSKEY_MAX];
 } WindowsState;

@@ -512,6 +512,9 @@ void PollInputEvents(void)
         CORE.Input.Keyboard.keyRepeatInFrame[i] = 0;
     }
 
+    CORE.Input.Mouse.previousWheelMove = CORE.Input.Mouse.currentWheelMove;
+    CORE.Input.Mouse.currentWheelMove = (Vector2){ 0.0f, 0.0f };
+
     // Register previous mouse states
     for (int i = 0; i < MAX_MOUSE_BUTTONS; i++) CORE.Input.Mouse.previousButtonState[i] = CORE.Input.Mouse.currentButtonState[i];
 
@@ -532,6 +535,8 @@ void PollInputEvents(void)
     {
         CORE.Input.Mouse.currentButtonState[i] = state->mouseButtons[i];
     }
+
+    CORE.Input.Mouse.currentWheelMove.y = (float)state->mouseWheel;
 
     for (int i = 0; i < WINDOWSKEY_MAX; i++)
     {

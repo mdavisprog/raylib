@@ -244,6 +244,11 @@ static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         platform.state.mouseButtons[button] = pressed;
     } break;
 
+    case WM_MOUSEWHEEL:
+    {
+        platform.state.mouseWheel = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+    } break;
+
     case WM_KEYDOWN:
     case WM_KEYUP:
     {
@@ -406,6 +411,9 @@ long long Windows_GetTime()
 
 void Windows_PollEvents()
 {
+    // Reset values with some input events.
+    platform.state.mouseWheel = 0;
+
     MSG msg = { 0 };
     while (PeekMessageW(&msg, platform.handle, 0, 0, PM_REMOVE))
     {
