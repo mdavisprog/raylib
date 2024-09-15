@@ -169,5 +169,7 @@ void Windows_PollEvents();
 WindowsState *Windows_CurrentState();
 char *Windows_ToMultiByte(wchar_t* data); // Returned value must be freed!
 void Windows_SetMousePos(int x, int y);
+void Windows_EnableRawInput();
+void Windows_DisableRawInput();
 
 #endif // RCORE_DESKTOP_WINDOWS_IMPL_H

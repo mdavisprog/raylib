@@ -422,6 +422,7 @@ void EnableCursor(void)
 {
     // Set cursor position in the middle
     SetMousePosition(CORE.Window.screen.width/2, CORE.Window.screen.height/2);
+    Windows_DisableRawInput();
 
     CORE.Input.Mouse.cursorHidden = false;
 }
@@ -431,6 +432,7 @@ void DisableCursor(void)
 {
     // Set cursor position in the middle
     SetMousePosition(CORE.Window.screen.width/2, CORE.Window.screen.height/2);
+    Windows_EnableRawInput();
 
     CORE.Input.Mouse.cursorHidden = true;
 }

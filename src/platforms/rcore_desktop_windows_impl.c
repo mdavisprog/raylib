@@ -46,6 +46,7 @@
 #include <stdlib.h>
 #include <Windows.h>
 #include <windowsx.h>
+#include <hidusage.h>
 
 //----------------------------------------------------------------------------------
 // Types
@@ -54,6 +55,7 @@
 typedef struct {
     HWND handle;
     WindowsState state;
+    BOOL usingRawInput;
 } PlatformData;
 
 //----------------------------------------------------------------------------------
@@ -212,8 +214,33 @@ static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOUSEMOVE:
     {
-        platform.state.mouseX = GET_X_LPARAM(lParam);
-        platform.state.mouseY = GET_Y_LPARAM(lParam);
+        if (!platform.usingRawInput)
+        {
+            platform.state.mouseX = GET_X_LPARAM(lParam);
+            platform.state.mouseY = GET_Y_LPARAM(lParam);
+        }
+    } break;
+
+    case WM_INPUT:
+    {
+        if (platform.usingRawInput)
+        {
+            RAWINPUT rawInput = { 0 };
+            UINT size = sizeof(rawInput);
+
+            UINT result = GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &rawInput, &size, sizeof(RAWINPUTHEADER));
+            if (result != (UINT)-1)
+            {
+                if (rawInput.header.dwType == RIM_TYPEMOUSE)
+                {
+                    if (!(rawInput.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+                    {
+                        platform.state.mouseX += rawInput.data.mouse.lLastX;
+                        platform.state.mouseY += rawInput.data.mouse.lLastY;
+                    }
+                }
+            }
+        }
     } break;
 
     case WM_LBUTTONDOWN:
@@ -260,6 +287,51 @@ static LRESULT WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static BOOL RegisterRawInputDevice(HWND handle, BOOL remove)
+{
+    RAWINPUTDEVICE rid = { 0 };
+    rid.usUsagePage = HID_USAGE_PAGE_GENERIC;
+    rid.usUsage = HID_USAGE_GENERIC_MOUSE;
+    rid.dwFlags = remove ? RIDEV_REMOVE : RIDEV_INPUTSINK;
+    rid.hwndTarget = handle;
+
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid)))
+    {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void CaptureCursor(HWND handle, BOOL capture)
+{
+    if (capture)
+    {
+        RECT rect = { 0 };
+        GetClientRect(handle, &rect);
+        POINT min = { rect.left, rect.top };
+        POINT max = { rect.right, rect.bottom };
+        ClientToScreen(handle, &min);
+        ClientToScreen(handle, &max);
+        rect.left = min.x;
+        rect.top = min.y;
+        rect.right = max.x;
+        rect.bottom = max.y;
+        ClipCursor(&rect);
+    }
+    else
+    {
+        ClipCursor(NULL);
+    }
+}
+
+static void CenterCursor()
+{
+    int width, height;
+    Windows_GetWindowSize(&width, &height);
+    Windows_SetMousePos(width / 2, height / 2);
 }
 
 //----------------------------------------------------------------------------------
@@ -434,5 +506,23 @@ char* Windows_ToMultiByte(wchar_t* data)
 
 void Windows_SetMousePos(int x, int y)
 {
-    SetCursorPos(x, y);
+    platform.state.mouseX = x;
+    platform.state.mouseY = y;
+    POINT point = { x, y };
+    ClientToScreen(platform.handle, &point);
+    SetCursorPos(point.x, point.y);
+}
+
+void Windows_EnableRawInput()
+{
+    RegisterRawInputDevice(platform.handle, FALSE);
+    CaptureCursor(platform.handle, TRUE);
+    platform.usingRawInput = TRUE;
+}
+
+void Windows_DisableRawInput()
+{
+    RegisterRawInputDevice(platform.handle, TRUE);
+    CaptureCursor(platform.handle, FALSE);
+    platform.usingRawInput = FALSE;
 }
