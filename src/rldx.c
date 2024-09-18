@@ -61,8 +61,7 @@ extern void TraceLog(int, const char*, ...);
 
 #define DXRELEASE(object) if (object != NULL) { object->lpVtbl->Release(object); object = NULL; }
 
-#define NUM_DESCRIPTORS 100
-#define NUM_TEXTURES NUM_DESCRIPTORS - 2
+#define NUM_DESCRIPTORS 256
 
 #ifndef PI
     #define PI 3.14159265358979323846f
@@ -101,11 +100,12 @@ typedef struct {
 
 typedef struct {
     unsigned int id;
-    unsigned int offset;
+    unsigned int handle;
     ID3D12Resource *data;
     ID3D12Resource *upload;
     int width;
     int height;
+    DXGI_FORMAT format;
 } DXTexture;
 
 typedef struct {
@@ -137,13 +137,34 @@ typedef struct {
 
 typedef struct {
     ID3D12DescriptorHeap* descriptorHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle;
+    D3D12_DESCRIPTOR_HEAP_TYPE type;
     UINT heapSize;
+    UINT currentHandle;
+    UINT maxHandles;
 } DescriptorHeap;
 
 typedef struct {
-    DescriptorHeap descriptor;
+    DescriptorHeap srv;
+    DescriptorHeap rtv;
+    DescriptorHeap dsv;
+} DescriptorHeaps;
+
+typedef struct {
+    unsigned int handle;
     ID3D12Resource *resource;
 } DepthStencil;
+
+typedef struct {
+    unsigned int id;
+    unsigned int rtvHandle;
+    unsigned int srvHandle;
+    unsigned int dsvHandle;
+    unsigned int colorAttachments[8];
+    unsigned int depthAttachment;
+    D3D12_RESOURCE_STATES currentState;
+} DXRenderTexture;
 
 typedef struct {
     ID3D12Device9 *device;
@@ -152,8 +173,7 @@ typedef struct {
     ID3D12CommandQueue *commandQueue;
     ID3D12CommandAllocator *commandAllocator;
     ID3D12GraphicsCommandList1 *commandList;
-    DescriptorHeap srv;
-    DescriptorHeap rtv;
+    DescriptorHeaps heaps;
     IDXGISwapChain4 *swapChain;
     ID3D12RootSignature *rootSignature;
     ID3D12Fence *fence;
@@ -163,10 +183,12 @@ typedef struct {
     ID3D12Resource *renderTargets[2];
     ID3D12Resource *constantBuffer;
     unsigned char *constantBufferPtr;
+    unsigned int constantBufferHandle;
     ObjectPool textures;
     ObjectPool renderBuffers;
     ObjectPool pipelines;
     ObjectPool shaders;
+    ObjectPool renderTextures;
     DepthStencil depthStencil;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
@@ -195,6 +217,7 @@ typedef struct {
     unsigned int defaultShaderId;
     unsigned int shaderBlendModeIds[8]; // One for each blend mode. defaultShaderId is the 0 element.
     unsigned int defaultLineShaderId;
+    unsigned int activeRenderTexture;
     rlRenderBatch defaultBatch;
     rlRenderBatch *currentBatch;
     DXMatrices matrices;
@@ -202,19 +225,20 @@ typedef struct {
     float texcoordx, texcoordy;
     float normalx, normaly, normalz;
     unsigned char colorr, colorg, colorb, colora;
+    unsigned char clearcolorr, clearcolorg, clearcolorb, clearcolora;
     ConstantBuffer constantBuffer;
     int width;
     int height;
     int viewportx, viewporty, viewportWidth, viewportHeight;
     int scissorx, scissory, scissorWidth, scissorHeight;
     int currentBlendMode;
+    int framebufferWidth, framebufferHeight;
 } DXState;
 
 //----------------------------------------------------------------------------------
 // Variables
 //----------------------------------------------------------------------------------
 
-static const int constantBufferIndex = NUM_DESCRIPTORS - 1;
 static DriverData driver = { 0 };
 static DXState dxState = { 0 };
 static double cullDistanceNear = RL_CULL_DISTANCE_NEAR;
@@ -350,7 +374,7 @@ static bool IsValidAdapter(IDXGIAdapter1* adapter)
     return true;
 }
 
-static bool CreateDescriptorHeap(DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS flags)
+static bool CreateDescriptorHeap(DescriptorHeap *heap, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS flags)
 {
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { 0 };
     heapDesc.Type = type;
@@ -361,8 +385,51 @@ static bool CreateDescriptorHeap(DescriptorHeap* heap, D3D12_DESCRIPTOR_HEAP_TYP
         return false;
     }
 
+    heap->type = type;
     heap->heapSize = driver.device->lpVtbl->GetDescriptorHandleIncrementSize(driver.device, type);
+    heap->currentHandle = 0;
+    heap->maxHandles = numDescriptors;
+    heap->descriptorHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap->descriptorHeap, &heap->cpuHandle);
+
+    if (flags & D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE)
+    {
+        heap->descriptorHeap->lpVtbl->GetGPUDescriptorHandleForHeapStart(heap->descriptorHeap, &heap->gpuHandle);
+    }
+
     return true;
+}
+
+static void DestroyDescriptorHeap(DescriptorHeap *heap)
+{
+    if (heap == NULL)
+    {
+        return;
+    }
+
+    static D3D12_CPU_DESCRIPTOR_HANDLE emptyCPUHandle = { 0 };
+    static D3D12_GPU_DESCRIPTOR_HANDLE emptyGPUHandle = { 0 };
+
+    DXRELEASE(heap->descriptorHeap);
+    heap->cpuHandle = emptyCPUHandle;
+    heap->gpuHandle = emptyGPUHandle;
+    heap->currentHandle = 0;
+    heap->heapSize = 0;
+    heap->maxHandles = 0;
+    heap->type = 0;
+}
+
+static unsigned int AllocateDescriptorHandles(DescriptorHeap *heap, unsigned int count)
+{
+    if (heap->currentHandle >= heap->maxHandles)
+    {
+        DXTRACELOG(RL_LOG_ERROR, "All descriptor handles for heap type %d are allocated!", heap->type);
+        return 0;
+    }
+
+    unsigned int result = heap->currentHandle;
+    heap->currentHandle += count;
+
+    return result;
 }
 
 static bool InitializeDevice()
@@ -566,19 +633,17 @@ static bool InitializeFence()
     return true;
 }
 
-static D3D12_CPU_DESCRIPTOR_HANDLE CPUOffset(DescriptorHeap *heap, UINT index)
+static D3D12_CPU_DESCRIPTOR_HANDLE CPUHandle(DescriptorHeap *heap, UINT handle)
 {
-    D3D12_CPU_DESCRIPTOR_HANDLE result = { 0 };
-    heap->descriptorHeap->lpVtbl->GetCPUDescriptorHandleForHeapStart(heap->descriptorHeap, &result);
-    result.ptr += index * heap->heapSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE result = heap->cpuHandle;
+    result.ptr += handle * heap->heapSize;
     return result;
 }
 
-static D3D12_GPU_DESCRIPTOR_HANDLE GPUOffset(DescriptorHeap *heap, UINT index)
+static D3D12_GPU_DESCRIPTOR_HANDLE GPUHandle(DescriptorHeap *heap, UINT handle)
 {
-    D3D12_GPU_DESCRIPTOR_HANDLE result = { 0 };
-    heap->descriptorHeap->lpVtbl->GetGPUDescriptorHandleForHeapStart(heap->descriptorHeap, &result);
-    result.ptr += index * heap->heapSize;
+    D3D12_GPU_DESCRIPTOR_HANDLE result = heap->gpuHandle;
+    result.ptr += handle * heap->heapSize;
     return result;
 }
 
@@ -590,19 +655,16 @@ static bool InitializeRenderTarget(UINT index)
         return false;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE offset = CPUOffset(&driver.rtv, index);
-    driver.device->lpVtbl->CreateRenderTargetView(driver.device, driver.renderTargets[index], NULL, offset);
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = CPUHandle(&driver.heaps.rtv, index);
+    driver.device->lpVtbl->CreateRenderTargetView(driver.device, driver.renderTargets[index], NULL, handle);
 
     return TRUE;
 }
 
 static bool InitializeSwapChain(UINT width, UINT height)
 {
-    if (!CreateDescriptorHeap(&driver.rtv, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create render target descriptors!");
-        return false;
-    }
+    // Allocate render target handles for the 2 frames for the swap chain.
+    AllocateDescriptorHandles(&driver.heaps.rtv, 2);
 
     IUnknown* unknownCommandQueue = NULL;
     HRESULT result = driver.commandQueue->lpVtbl->QueryInterface(driver.commandQueue, &IID_IUnknown, (LPVOID*)&unknownCommandQueue);
@@ -681,7 +743,8 @@ static bool InitializeConstantBuffer()
     view.BufferLocation = driver.constantBuffer->lpVtbl->GetGPUVirtualAddress(driver.constantBuffer);
     view.SizeInBytes = (UINT)description.Width;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE handle = CPUOffset(&driver.srv, constantBufferIndex);
+    driver.constantBufferHandle = AllocateDescriptorHandles(&driver.heaps.srv, 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = CPUHandle(&driver.heaps.srv, driver.constantBufferHandle);
     driver.device->lpVtbl->CreateConstantBufferView(driver.device, &view, handle);
 
     D3D12_RANGE range = { 0 };
@@ -697,12 +760,6 @@ static bool InitializeConstantBuffer()
 
 static bool InitializeDepthStencil(int width, int height)
 {
-    if (!CreateDescriptorHeap(&driver.depthStencil.descriptor, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create depth stencil descriptor heap!");
-        return false;
-    }
-
     D3D12_HEAP_PROPERTIES heap = { 0 };
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -740,8 +797,9 @@ static bool InitializeDepthStencil(int width, int height)
         return false;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE offset = CPUOffset(&driver.depthStencil.descriptor, 0);
-    driver.device->lpVtbl->CreateDepthStencilView(driver.device, driver.depthStencil.resource, &dsvDesc, offset);
+    driver.depthStencil.handle = AllocateDescriptorHandles(&driver.heaps.dsv, 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = CPUHandle(&driver.heaps.dsv, driver.depthStencil.handle);
+    driver.device->lpVtbl->CreateDepthStencilView(driver.device, driver.depthStencil.resource, &dsvDesc, handle);
 
     return true;
 }
@@ -840,31 +898,16 @@ static bool ResetCommands()
     return true;
 }
 
-static void SetRenderTargets()
-{
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CPUOffset(&driver.rtv, driver.frameIndex);
-    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUOffset(&driver.depthStencil.descriptor, 0);
-    driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, &dsvHandle);
-}
-
-static void UpdateRenderTarget()
+static void TransitionResource(D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to, ID3D12Resource *resource)
 {
     D3D12_RESOURCE_BARRIER barrier = { 0 };
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.pResource = driver.renderTargets[driver.frameIndex];
+    barrier.Transition.StateBefore = from;
+    barrier.Transition.StateAfter = to;
+    barrier.Transition.pResource = resource;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
     driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
-
-    SetRenderTargets();
-}
-
-static void ClearDepthStencil()
-{
-    D3D12_CPU_DESCRIPTOR_HANDLE dsv = CPUOffset(&driver.depthStencil.descriptor, 0);
-    driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
 }
 
 static void SetViewport()
@@ -1477,8 +1520,8 @@ static DXTexture *GetTexture(unsigned int id)
 static void BindTexture(unsigned int id)
 {
     DXTexture *texture = GetTexture(id);
-    D3D12_GPU_DESCRIPTOR_HANDLE offset = GPUOffset(&driver.srv, texture->offset);
-    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, offset);
+    D3D12_GPU_DESCRIPTOR_HANDLE handle = GPUHandle(&driver.heaps.srv, texture->handle);
+    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, handle);
 }
 
 static DXGI_FORMAT ToDXGIFormat(rlPixelFormat format)
@@ -1505,6 +1548,340 @@ static int StrideInBytes(rlPixelFormat format)
     }
 
     return 4;
+}
+
+typedef struct {
+    void *data;
+    bool needsFree;
+    int format;
+} TransformedData;
+
+static TransformedData TransformData(const void *data, int width, int height, int format)
+{
+    TransformedData result = { 0 };
+    result.data = (void*)data;
+    result.needsFree = false;
+    result.format = format;
+
+    if (data == NULL)
+    {
+        return result;
+    }
+
+    if (format == RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8)
+    {
+        unsigned char *src = (char*)data;
+        unsigned char *dst = (char*)RL_MALLOC(width * height * 4 * sizeof(char));
+
+        int srcOffset = 0;
+        int dstOffset = 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                dst[dstOffset + 0] = src[srcOffset + 0];
+                dst[dstOffset + 1] = src[srcOffset + 1];
+                dst[dstOffset + 2] = src[srcOffset + 2];
+                dst[dstOffset + 3] = 255;
+
+                srcOffset += 3;
+                dstOffset += 4;
+            }
+        }
+
+        result.data = dst;
+        result.needsFree = true;
+        result.format = RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    }
+
+    return result;
+}
+
+static bool UploadTextureData(DXTexture *texture, int offsetX, int offsetY, int width, int height, int stride, const void *data)
+{
+    if (texture->upload != NULL)
+    {
+        DXRELEASE(texture->upload);
+    }
+
+    TransitionResource(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST, texture->data);
+
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC description = { 0 };
+    texture->data->lpVtbl->GetDesc(texture->data, &description);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts = { 0 };
+    UINT numRows;
+    UINT64 rowSizeInBytes;
+    UINT64 totalBytes;
+    driver.device->lpVtbl->GetCopyableFootprints(driver.device, &description, 0, 1, 0, &layouts, &numRows, &rowSizeInBytes, &totalBytes);
+
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    description.Format = DXGI_FORMAT_UNKNOWN;
+    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    description.Width = totalBytes;
+    description.Height = 1;
+    
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&texture->upload);
+    if (FAILED(result))
+    {
+        DXRELEASE(texture->upload);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture upload resource!");
+        return false;
+    }
+
+    unsigned char *uploadBuffer = NULL;
+    result = texture->upload->lpVtbl->Map(texture->upload, 0, NULL, (LPVOID*)&uploadBuffer);
+    if (FAILED(result))
+    {
+        DXRELEASE(texture->upload);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to map upload resource memory!");
+        return false;
+    }
+
+    D3D12_MEMCPY_DEST memcpyDest = { 0 };
+    memcpyDest.pData = uploadBuffer + layouts.Offset;
+    memcpyDest.RowPitch = layouts.Footprint.RowPitch;
+    memcpyDest.SlicePitch = (UINT64)layouts.Footprint.RowPitch * (UINT64)numRows;
+
+    D3D12_SUBRESOURCE_DATA textureData = { 0 };
+    textureData.pData = data;
+    textureData.RowPitch = width * stride;
+    textureData.SlicePitch = textureData.RowPitch * height;
+
+    for (unsigned int slice = 0; slice < layouts.Footprint.Depth; slice++)
+    {
+        unsigned char *dest = (unsigned char*)memcpyDest.pData + memcpyDest.SlicePitch * slice;
+        const unsigned char *src = (unsigned char*)textureData.pData + textureData.SlicePitch * (UINT64)slice;
+
+        for (unsigned int row = 0; row < numRows; row++)
+        {
+            memcpy(dest + memcpyDest.RowPitch * row, src + textureData.RowPitch * (UINT64)row, rowSizeInBytes);
+        }
+    }
+
+    texture->upload->lpVtbl->Unmap(texture->upload, 0, NULL);
+
+    D3D12_TEXTURE_COPY_LOCATION copyDest = { 0 };
+    copyDest.pResource = texture->data;
+    copyDest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    copyDest.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION copySrc = { 0 };
+    copySrc.pResource = texture->upload;
+    copySrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    copySrc.PlacedFootprint = layouts;
+
+    driver.commandList->lpVtbl->CopyTextureRegion(driver.commandList, &copyDest, 0, 0, 0, &copySrc, NULL);
+
+    TransitionResource(D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, texture->data);
+
+    return true;
+}
+
+static DXTexture *CreateTexture(const void *data, int width, int height, DXGI_FORMAT format, int mipmapCount, D3D12_RESOURCE_STATES state, D3D12_RESOURCE_FLAGS resourceFlags)
+{
+    DXTexture texture = { 0 };
+
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC description = { 0 };
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Alignment = 0;
+    description.Width = width;
+    description.Height = height;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = format;
+    description.SampleDesc.Count = 1;
+    description.SampleDesc.Quality = 0;
+    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    description.Flags = resourceFlags;
+
+    D3D12_CLEAR_VALUE clearValue = { 0 };
+    clearValue.Format = format;
+    D3D12_CLEAR_VALUE *pClearValue = NULL;
+
+    if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+    {
+        clearValue.DepthStencil.Depth = 1.0f;
+        clearValue.DepthStencil.Stencil = 0;
+        pClearValue = &clearValue;
+    }
+
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, state, pClearValue, &IID_ID3D12Resource, (LPVOID*)&texture.data);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture resource!");
+        return NULL;
+    }
+
+    texture.id = driver.textures.index++;
+    texture.width = width;
+    texture.height = height;
+    texture.format = description.Format;
+
+    VectorPush(&driver.textures.pool, &texture);
+
+    return (DXTexture*)VectorGet(&driver.textures.pool, driver.textures.pool.length - 1);
+}
+
+static void DestroyTexture(DXTexture *texture)
+{
+    if (texture == NULL)
+    {
+        return;
+    }
+
+    texture->id = 0;
+    texture->format = DXGI_FORMAT_UNKNOWN;
+    DXRELEASE(texture->data);
+    DXRELEASE(texture->upload);
+}
+
+static bool RemoveTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.textures.pool.length; i++)
+    {
+        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
+
+        if (texture->id == id)
+        {
+            DestroyTexture(texture);
+            VectorRemove(&driver.textures.pool, i);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static unsigned int CreateRenderTexture()
+{
+    DXRenderTexture renderTexture = { 0 };
+    renderTexture.id = driver.renderTextures.index++;
+    renderTexture.rtvHandle = AllocateDescriptorHandles(&driver.heaps.rtv, 1);
+    renderTexture.srvHandle = AllocateDescriptorHandles(&driver.heaps.srv, 1);
+    renderTexture.dsvHandle = AllocateDescriptorHandles(&driver.heaps.dsv, 1);
+    renderTexture.currentState = D3D12_RESOURCE_STATE_COMMON;
+
+    VectorPush(&driver.renderTextures.pool, &renderTexture);
+    return renderTexture.id;
+}
+
+static DXRenderTexture *GetRenderTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
+    {
+        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
+
+        if (renderTexture->id == id)
+        {
+            return renderTexture;
+        }
+    }
+
+    return NULL;
+}
+
+static void DestroyRenderTexture(DXRenderTexture *renderTexture)
+{
+    if (renderTexture == NULL)
+    {
+        return;
+    }
+
+    renderTexture->id = 0;
+    renderTexture->rtvHandle = 0;
+    renderTexture->srvHandle = 0;
+    renderTexture->dsvHandle = 0;
+    renderTexture->currentState = D3D12_RESOURCE_STATE_COMMON;
+}
+
+static bool RemoveRenderTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
+    {
+        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
+
+        if (renderTexture->id == id)
+        {
+            DestroyRenderTexture(renderTexture);
+            VectorRemove(&driver.renderTextures.pool, i);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE CurrentRenderTargetHandle()
+{
+    unsigned int rtvHandle = 0;
+
+    if (dxState.activeRenderTexture != 0)
+    {
+        DXRenderTexture *renderTexture = GetRenderTexture(dxState.activeRenderTexture);
+        if (renderTexture == NULL)
+        {
+            TRACELOG(RL_LOG_ERROR, "Invalid render texutre '%d' in CurrentRenderTargetHandle!", dxState.activeRenderTexture);
+        }
+
+        rtvHandle = renderTexture->rtvHandle;
+    }
+    else
+    {
+        rtvHandle = driver.frameIndex;
+    }
+
+    return CPUHandle(&driver.heaps.rtv, rtvHandle);
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE CurrentDepthStencilHandle()
+{
+    unsigned int dsvHandle = 0;
+
+    if (dxState.activeRenderTexture != 0)
+    {
+        DXRenderTexture *renderTexture = GetRenderTexture(dxState.activeRenderTexture);
+        if (renderTexture == NULL)
+        {
+            TRACELOG(RL_LOG_ERROR, "Invalid render texutre '%d' in CurrentDepthStencilHandle!", dxState.activeRenderTexture);
+        }
+
+        dsvHandle = renderTexture->dsvHandle;
+    }
+    else
+    {
+        dsvHandle = driver.depthStencil.handle;
+    }
+
+    return CPUHandle(&driver.heaps.dsv, dsvHandle);
+}
+
+static void SetRenderTargets()
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CurrentRenderTargetHandle();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CurrentDepthStencilHandle();
+    driver.commandList->lpVtbl->OMSetRenderTargets(driver.commandList, 1, &rtvHandle, FALSE, &dsvHandle);
+}
+
+static void UpdateRenderTarget()
+{
+    TransitionResource(D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET, driver.renderTargets[driver.frameIndex]);
+    SetRenderTargets();
 }
 
 //----------------------------------------------------------------------------------
@@ -1923,9 +2300,69 @@ void rlEnableShader(unsigned int id) {}
 void rlDisableShader(void) {}
 
 // Framebuffer state
-void rlEnableFramebuffer(unsigned int id) {}
-void rlDisableFramebuffer(void) {}
-unsigned int rlGetActiveFramebuffer(void) { return 0; }
+void rlEnableFramebuffer(unsigned int id)
+{
+    if (dxState.activeRenderTexture != id)
+    {
+        DXRenderTexture *renderTexture = GetRenderTexture(id);
+        if (renderTexture == NULL)
+        {
+            TRACELOG(RL_LOG_ERROR, "Failed to rlEnableFramebuffer with id '%d'!", id);
+            return;
+        }
+
+        dxState.activeRenderTexture = id;
+
+        // The texture associated with this render target may not have been created yet.
+        DXTexture *texture = GetTexture(renderTexture->colorAttachments[0]);
+        if (texture == NULL)
+        {
+            return;
+        }
+
+        if (renderTexture->currentState == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+        {
+            D3D12_RESOURCE_STATES toState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            TransitionResource(renderTexture->currentState, toState, texture->data);
+            renderTexture->currentState = toState;
+        }
+    }
+}
+
+void rlDisableFramebuffer(void)
+{
+    if (dxState.activeRenderTexture != 0)
+    {
+        DXRenderTexture *renderTexture = GetRenderTexture(dxState.activeRenderTexture);
+        if (renderTexture == NULL)
+        {
+            TRACELOG(RL_LOG_ERROR, "Failed to rlDisableFramebuffer with id '%d'!", dxState.activeRenderTexture);
+            return;
+        }
+
+        dxState.activeRenderTexture = 0;
+
+        DXTexture *texture = GetTexture(renderTexture->colorAttachments[0]);
+        if (texture == NULL)
+        {
+            TRACELOG(RL_LOG_WARNING, "Failed to rlDisableFramebuffer with id '%d'! No valid texture resource.", dxState.activeRenderTexture);
+            return;
+        }
+
+        if (renderTexture->currentState == D3D12_RESOURCE_STATE_RENDER_TARGET)
+        {
+            D3D12_RESOURCE_STATES toState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            TransitionResource(renderTexture->currentState, toState, texture->data);
+            renderTexture->currentState = toState;
+        }
+    }
+}
+
+unsigned int rlGetActiveFramebuffer(void)
+{
+    return dxState.activeRenderTexture;
+}
+
 void rlActiveDrawBuffers(int count) {}
 void rlBlitFramebuffer(int srcX, int srcY, int srcWidth, int srcHeight, int dstX, int dstY, int dstWidth, int dstHeight, int bufferMask) {}
 void rlBindFramebuffer(unsigned int target, unsigned int framebuffer) {}
@@ -1965,12 +2402,22 @@ bool rlIsStereoRenderEnabled(void) { return false; }
 
 void rlClearColor(unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 {
-    float color[4] = { (float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f, (float)a / 255.0f };
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = CPUOffset(&driver.rtv, driver.frameIndex);
-    driver.commandList->lpVtbl->ClearRenderTargetView(driver.commandList, rtv, color, 0, NULL);
+    dxState.clearcolorr = r;
+    dxState.clearcolorg = g;
+    dxState.clearcolorb = b;
+    dxState.clearcolora = a;
 }
 
-void rlClearScreenBuffers(void) {}
+void rlClearScreenBuffers(void)
+{
+    float color[4] = { (float)dxState.clearcolorr / 255.0f, (float)dxState.clearcolorg / 255.0f, (float)dxState.clearcolorb / 255.0f, (float)dxState.clearcolora / 255.0f };
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CurrentRenderTargetHandle();
+    driver.commandList->lpVtbl->ClearRenderTargetView(driver.commandList, rtvHandle, color, 0, NULL);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CurrentDepthStencilHandle();
+    driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
+}
+
 void rlCheckErrors(void) {}
 
 void rlSetBlendMode(int mode)
@@ -2000,6 +2447,9 @@ void rlglInit(int width, int height)
     driver.shaders.pool = VectorCreate(sizeof(DXShader));
     driver.shaders.index = 1;
 
+    driver.renderTextures.pool = VectorCreate(sizeof(DXRenderTexture));
+    driver.renderTextures.index = 1;
+
     if (!InitializeDevice())
     {
         return;
@@ -2010,9 +2460,21 @@ void rlglInit(int width, int height)
         return;
     }
 
-    if (!CreateDescriptorHeap(&driver.srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, NUM_DESCRIPTORS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
+    if (!CreateDescriptorHeap(&driver.heaps.srv, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, NUM_DESCRIPTORS, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
     {
         DXTRACELOG(RL_LOG_ERROR, "Failed to create SRV descriptor heap!");
+        return;
+    }
+
+    if (!CreateDescriptorHeap(&driver.heaps.rtv, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, NUM_DESCRIPTORS, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create render target descriptors!");
+        return;
+    }
+
+    if (!CreateDescriptorHeap(&driver.heaps.dsv, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, NUM_DESCRIPTORS, D3D12_DESCRIPTOR_HEAP_FLAG_NONE))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create depth stencil descriptors!");
         return;
     }
 
@@ -2093,6 +2555,13 @@ void rlglClose(void)
 {
     rlUnloadRenderBatch(dxState.defaultBatch);
 
+    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
+    {
+        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
+        DestroyRenderTexture(renderTexture);
+    }
+    VectorDestroy(&driver.renderTextures.pool);
+
     for (size_t i = 0; i < driver.shaders.pool.length; i++)
     {
         DXShader *shader = (DXShader*)VectorGet(&driver.shaders.pool, i);
@@ -2110,8 +2579,7 @@ void rlglClose(void)
     for (size_t i = 0; i < driver.textures.pool.length; i++)
     {
         DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
-        DXRELEASE(texture->data);
-        DXRELEASE(texture->upload);
+        DestroyTexture(texture);
     }
     VectorDestroy(&driver.textures.pool);
 
@@ -2122,16 +2590,17 @@ void rlglClose(void)
     }
     VectorDestroy(&driver.renderBuffers.pool);
 
+    DestroyDescriptorHeap(&driver.heaps.dsv);
+    DestroyDescriptorHeap(&driver.heaps.rtv);
+    DestroyDescriptorHeap(&driver.heaps.srv);
+
     DXRELEASE(driver.constantBuffer);
     DXRELEASE(driver.renderTargets[0]);
     DXRELEASE(driver.renderTargets[1]);
     DXRELEASE(driver.depthStencil.resource);
-    DXRELEASE(driver.depthStencil.descriptor.descriptorHeap);
     DXRELEASE(driver.swapChain);
     DXRELEASE(driver.fence);
     DXRELEASE(driver.rootSignature);
-    DXRELEASE(driver.rtv.descriptorHeap);
-    DXRELEASE(driver.srv.descriptorHeap);
     DXRELEASE(driver.commandList);
     DXRELEASE(driver.commandAllocator);
     DXRELEASE(driver.commandQueue);
@@ -2142,10 +2611,26 @@ void rlglClose(void)
 
 void rlLoadExtensions(void *loader) {}
 int rlGetVersion(void) { return 0; }
-void rlSetFramebufferWidth(int width) {}
-int rlGetFramebufferWidth(void) { return 0; }
-void rlSetFramebufferHeight(int height) {}
-int rlGetFramebufferHeight(void) { return 0; }
+
+void rlSetFramebufferWidth(int width)
+{
+    dxState.framebufferWidth = width;
+}
+
+int rlGetFramebufferWidth(void)
+{
+    return dxState.framebufferWidth;
+}
+
+void rlSetFramebufferHeight(int height)
+{
+    dxState.framebufferHeight = height;
+}
+
+int rlGetFramebufferHeight(void)
+{
+    return dxState.framebufferHeight;
+}
 
 unsigned int rlGetTextureIdDefault(void)
 {
@@ -2283,16 +2768,19 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     }
 
     SetRenderTargets();
-    ClearDepthStencil();
+
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CurrentDepthStencilHandle();
+    driver.commandList->lpVtbl->ClearDepthStencilView(driver.commandList, dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, NULL);
+
     SetViewport();
     SetScissor();
     BindRootSignature();
 
-    ID3D12DescriptorHeap* heaps[] = { driver.srv.descriptorHeap };
+    ID3D12DescriptorHeap* heaps[] = { driver.heaps.srv.descriptorHeap };
     driver.commandList->lpVtbl->SetDescriptorHeaps(driver.commandList, _countof(heaps), heaps);
 
-    D3D12_GPU_DESCRIPTOR_HANDLE constantBufferOffset = GPUOffset(&driver.srv, constantBufferIndex);
-    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 1, constantBufferOffset);
+    D3D12_GPU_DESCRIPTOR_HANDLE constantBufferHandle = GPUHandle(&driver.heaps.srv, driver.constantBufferHandle);
+    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 1, constantBufferHandle);
 
     Matrix matProjection = dxState.matrices.projection;
     Matrix matModelView = dxState.matrices.modelView;
@@ -2464,182 +2952,65 @@ void rlDrawVertexArrayElements(int offset, int count, const void *buffer) {}
 void rlDrawVertexArrayInstanced(int offset, int count, int instances) {}
 void rlDrawVertexArrayElementsInstanced(int offset, int count, const void *buffer, int instances) {}
 
-typedef struct {
-    void *data;
-    bool needsFree;
-    int format;
-} TransformedData;
-
-static TransformedData TransformData(const void *data, int width, int height, int format)
-{
-    TransformedData result = { 0 };
-    result.data = (void*)data;
-    result.needsFree = false;
-    result.format = format;
-
-    if (format == RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8)
-    {
-        unsigned char *src = (char*)data;
-        unsigned char *dst = (char*)RL_MALLOC(width * height * 4 * sizeof(char));
-
-        int srcOffset = 0;
-        int dstOffset = 0;
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
-            {
-                dst[dstOffset + 0] = src[srcOffset + 0];
-                dst[dstOffset + 1] = src[srcOffset + 1];
-                dst[dstOffset + 2] = src[srcOffset + 2];
-                dst[dstOffset + 3] = 255;
-
-                srcOffset += 3;
-                dstOffset += 4;
-            }
-        }
-
-        result.data = dst;
-        result.needsFree = true;
-        result.format = RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    }
-
-    return result;
-}
-
 // Textures management
 unsigned int rlLoadTexture(const void *data, int width, int height, int format, int mipmapCount)
 {
-    DXTexture texture = { 0 };
-
     TransformedData transformedData = TransformData(data, width, height, format);
 
-    D3D12_HEAP_PROPERTIES heap = { 0 };
-    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    heap.CreationNodeMask = 1;
-    heap.VisibleNodeMask = 1;
+    D3D12_RESOURCE_FLAGS resourceFlags = D3D12_RESOURCE_FLAG_NONE;
 
-    D3D12_RESOURCE_DESC description = { 0 };
-    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    description.Alignment = 0;
-    description.Width = width;
-    description.Height = height;
-    description.DepthOrArraySize = 1;
-    description.MipLevels = 1;
-    description.Format = ToDXGIFormat(transformedData.format);
-    description.SampleDesc.Count = 1;
-    description.SampleDesc.Quality = 0;
-    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    description.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (LPVOID*)&texture.data);
-    if (FAILED(result))
+    if (dxState.activeRenderTexture != 0)
     {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture resource!");
+        resourceFlags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    }
+
+    DXTexture *texture = CreateTexture(transformedData.data, width, height, ToDXGIFormat(format), mipmapCount, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, resourceFlags);
+    if (texture == NULL)
+    {
         return 0;
     }
-
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts = { 0 };
-    UINT numRows;
-    UINT64 rowSizeInBytes;
-    UINT64 totalBytes;
-    driver.device->lpVtbl->GetCopyableFootprints(driver.device, &description, 0, 1, 0, &layouts, &numRows, &rowSizeInBytes, &totalBytes);
-
-    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    description.Format = DXGI_FORMAT_UNKNOWN;
-    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    description.Width = totalBytes;
-    description.Height = 1;
-    
-    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&texture.upload);
-    if (FAILED(result))
-    {
-        DXRELEASE(texture.data);
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture upload resource!");
-        return 0;
-    }
-
-    unsigned char *uploadBuffer = NULL;
-    result = texture.upload->lpVtbl->Map(texture.upload, 0, NULL, (LPVOID*)&uploadBuffer);
-    if (FAILED(result))
-    {
-        DXRELEASE(texture.data);
-        DXRELEASE(texture.upload);
-        DXTRACELOG(RL_LOG_ERROR, "Failed to map upload resource memory!");
-        return 0;
-    }
-
-    D3D12_MEMCPY_DEST memcpyDest = { 0 };
-    memcpyDest.pData = uploadBuffer + layouts.Offset;
-    memcpyDest.RowPitch = layouts.Footprint.RowPitch;
-    memcpyDest.SlicePitch = (UINT64)layouts.Footprint.RowPitch * (UINT64)numRows;
-
-    D3D12_SUBRESOURCE_DATA textureData = { 0 };
-    textureData.pData = transformedData.data;
-    textureData.RowPitch = width * StrideInBytes(transformedData.format);
-    textureData.SlicePitch = textureData.RowPitch * height;
-
-    for (unsigned int slice = 0; slice < layouts.Footprint.Depth; slice++)
-    {
-        unsigned char *dest = (unsigned char*)memcpyDest.pData + memcpyDest.SlicePitch * slice;
-        const unsigned char *src = (unsigned char*)textureData.pData + textureData.SlicePitch * (UINT64)slice;
-
-        for (unsigned int row = 0; row < numRows; row++)
-        {
-            memcpy(dest + memcpyDest.RowPitch * row, src + textureData.RowPitch * (UINT64)row, rowSizeInBytes);
-        }
-    }
-
-    texture.upload->lpVtbl->Unmap(texture.upload, 0, NULL);
-
-    D3D12_TEXTURE_COPY_LOCATION copyDest = { 0 };
-    copyDest.pResource = texture.data;
-    copyDest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    copyDest.SubresourceIndex = 0;
-
-    D3D12_TEXTURE_COPY_LOCATION copySrc = { 0 };
-    copySrc.pResource = texture.upload;
-    copySrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    copySrc.PlacedFootprint = layouts;
-
-    driver.commandList->lpVtbl->CopyTextureRegion(driver.commandList, &copyDest, 0, 0, 0, &copySrc, NULL);
-
-    D3D12_RESOURCE_BARRIER barrier = { 0 };
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    barrier.Transition.pResource = texture.data;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC shaderViewDesc = { 0 };
     shaderViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    shaderViewDesc.Format = description.Format;
+    shaderViewDesc.Format = texture->format;
     shaderViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     shaderViewDesc.Texture2D.MipLevels = 1;
 
-    const UINT index = (UINT)driver.textures.pool.length;
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuOffset = CPUOffset(&driver.srv, index);
-    driver.device->lpVtbl->CreateShaderResourceView(driver.device, texture.data, &shaderViewDesc, cpuOffset);
-    texture.id = driver.textures.index++;
-    texture.offset = index;
-    texture.width = width;
-    texture.height = height;
+    const UINT handle = AllocateDescriptorHandles(&driver.heaps.srv, 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = CPUHandle(&driver.heaps.srv, handle);
+    driver.device->lpVtbl->CreateShaderResourceView(driver.device, texture->data, &shaderViewDesc, cpuHandle);
+    texture->handle = handle;
 
-    VectorPush(&driver.textures.pool, &texture);
+    if (transformedData.data != NULL)
+    {
+        if (!UploadTextureData(texture, 0, 0, width, height, StrideInBytes(format), transformedData.data))
+        {
+            RemoveTexture(texture->id);
+            return 0;
+        }
+    }
 
     if (transformedData.needsFree)
     {
         RL_FREE(transformedData.data);
     }
 
-    return texture.id;
+    return texture->id;
 }
 
-unsigned int rlLoadTextureDepth(int width, int height, bool useRenderBuffer) { return 0; }
+unsigned int rlLoadTextureDepth(int width, int height, bool useRenderBuffer)
+{
+    D3D12_RESOURCE_FLAGS resourceFlags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    DXTexture *texture = CreateTexture(NULL, width, height, DXGI_FORMAT_D32_FLOAT, 0, D3D12_RESOURCE_STATE_DEPTH_WRITE, resourceFlags);
+    if (texture == NULL)
+    {
+        return 0;
+    }
+
+    return texture->id;
+}
+
 unsigned int rlLoadTextureCubemap(const void *data, int size, int format) { return 0; }
 void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int height, int format, const void *data) {}
 void rlGetGlTextureFormats(int format, unsigned int *glInternalFormat, unsigned int *glFormat, unsigned int *glType) {}
@@ -2650,10 +3021,89 @@ void *rlReadTexturePixels(unsigned int id, int width, int height, int format) { 
 unsigned char *rlReadScreenPixels(int width, int height) { return ""; }
 
 // Framebuffer management (fbo)
-unsigned int rlLoadFramebuffer(void) { return 0; }
-void rlFramebufferAttach(unsigned int fboId, unsigned int texId, int attachType, int texType, int mipLevel) {}
-bool rlFramebufferComplete(unsigned int id) { return false; }
-void rlUnloadFramebuffer(unsigned int id) {}
+unsigned int rlLoadFramebuffer(void)
+{
+    return CreateRenderTexture();
+}
+
+void rlFramebufferAttach(unsigned int fboId, unsigned int texId, int attachType, int texType, int mipLevel)
+{
+    DXRenderTexture *renderTexture = GetRenderTexture(fboId);
+    if (renderTexture == NULL)
+    {
+        TRACELOG(RL_LOG_WARNING, "Invalid framebuffer '%d'!", fboId);
+        return;
+    }
+
+    DXTexture *texture = GetTexture(texId);
+    if (texture == NULL)
+    {
+        TRACELOG(RL_LOG_WARNING, "Invalid texture id '%d'!", texId);
+        return;
+    }
+
+    switch (attachType)
+    {
+    case RL_ATTACHMENT_COLOR_CHANNEL0: renderTexture->colorAttachments[0] = texId; break;
+    case RL_ATTACHMENT_COLOR_CHANNEL1: renderTexture->colorAttachments[1] = texId; break;
+    case RL_ATTACHMENT_COLOR_CHANNEL2: renderTexture->colorAttachments[2] = texId; break;
+    case RL_ATTACHMENT_COLOR_CHANNEL3: renderTexture->colorAttachments[3] = texId; break;
+    case RL_ATTACHMENT_COLOR_CHANNEL4: renderTexture->colorAttachments[4] = texId; break;
+    case RL_ATTACHMENT_COLOR_CHANNEL5: renderTexture->colorAttachments[5] = texId; break;
+    case RL_ATTACHMENT_COLOR_CHANNEL6: renderTexture->colorAttachments[6] = texId; break;
+    case RL_ATTACHMENT_COLOR_CHANNEL7: renderTexture->colorAttachments[7] = texId; break;
+    case RL_ATTACHMENT_DEPTH: renderTexture->depthAttachment = texId; break;
+    default: TRACELOG(RL_LOG_WARNING, "rlFramebufferAttach: Unhandled attachment type '%d'!", attachType); break;
+    }
+
+    if (texType == RL_ATTACHMENT_TEXTURE2D && renderTexture->currentState == D3D12_RESOURCE_STATE_COMMON)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = CPUHandle(&driver.heaps.rtv, renderTexture->rtvHandle);
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = { 0 };
+        rtvDesc.Format = texture->format;
+        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Texture2D.MipSlice = 0;
+        driver.device->lpVtbl->CreateRenderTargetView(driver.device, texture->data, &rtvDesc, rtvHandle);
+
+        D3D12_CPU_DESCRIPTOR_HANDLE srvHandle = CPUHandle(&driver.heaps.srv, renderTexture->srvHandle);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srDesc = { 0 };
+        srDesc.Format = texture->format;
+        srDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srDesc.Texture2D.MipLevels = 1;
+        srDesc.Texture2D.MostDetailedMip = 0;
+        driver.device->lpVtbl->CreateShaderResourceView(driver.device, texture->data, &srDesc, srvHandle);
+
+        renderTexture->currentState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+    else if (attachType == RL_ATTACHMENT_DEPTH)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = CPUHandle(&driver.heaps.dsv, renderTexture->dsvHandle);
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = { 0 };
+        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsvDesc.Texture2D.MipSlice = 0;
+        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+        driver.device->lpVtbl->CreateDepthStencilView(driver.device, texture->data, &dsvDesc, dsvHandle);
+    }
+}
+
+bool rlFramebufferComplete(unsigned int id)
+{
+    DXRenderTexture *renderTexture = GetRenderTexture(id);
+    if (renderTexture == NULL)
+    {
+        TRACELOG(RL_LOG_WARNING, "Invalid framebuffer '%d'!", id);
+        return false;
+    }
+
+    return true;
+}
+
+void rlUnloadFramebuffer(unsigned int id)
+{
+    RemoveRenderTexture(id);
+}
 
 // Shaders management
 unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode)
@@ -2781,14 +3231,7 @@ void rlLoadDrawQuad(void) {}
 
 void rlPresent()
 {
-    D3D12_RESOURCE_BARRIER barrier = { 0 };
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.pResource = driver.renderTargets[driver.frameIndex];
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+    TransitionResource(D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT, driver.renderTargets[driver.frameIndex]);
 
     ExecuteCommands();
 
