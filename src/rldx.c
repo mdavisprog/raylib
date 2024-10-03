@@ -2367,6 +2367,11 @@ void rlActiveDrawBuffers(int count) {}
 void rlBlitFramebuffer(int srcX, int srcY, int srcWidth, int srcHeight, int dstX, int dstY, int dstWidth, int dstHeight, int bufferMask) {}
 void rlBindFramebuffer(unsigned int target, unsigned int framebuffer) {}
 
+bool rlIsFramebufferOriginTopLeft()
+{
+    return true;
+}
+
 // General render state
 void rlEnableColorBlend(void) {}
 void rlDisableColorBlend(void) {}
@@ -3103,6 +3108,38 @@ bool rlFramebufferComplete(unsigned int id)
 void rlUnloadFramebuffer(unsigned int id)
 {
     RemoveRenderTexture(id);
+}
+
+// NOTE: OpenGL framebuffers have their origin in the bottom left. Other non-OpenGL APIs such as DirectX and
+// Vulkan have their origin on the top right. Since some examples and many users were already used to flipping
+// the render texture when drawing, this will flip it back if needed on the target API.
+// Another possible way to flip the render texture in DirectX is to flip the viewport before performing any
+// draw calls. However, doing this will cull out all of the geometry since they are back-facing. Unfortunately,
+// to change the culling property requires creating a pipeline state object (PSO) for each culling type and for 
+// each blend mode with the different culling property set. This gets even more complicated if there are user
+// defined PSOs which may not have the proper culling method set. To avoid this, the DrawTexturePro function
+// will just flip the texture if it is bound to a framebuffer/render texture object.
+bool rlIsAttachedToFramebuffer(unsigned int texId)
+{
+    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
+    {
+        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
+
+        for (int attachment = 0; attachment < 8; attachment++)
+        {
+            if (renderTexture->colorAttachments[attachment] == texId)
+            {
+                return true;
+            }
+        }
+
+        if (renderTexture->depthAttachment == texId)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // Shaders management

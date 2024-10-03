@@ -4561,6 +4561,14 @@ void DrawTexturePro(Texture2D texture, Rectangle source, Rectangle dest, Vector2
         float width = (float)texture.width;
         float height = (float)texture.height;
 
+        // NOTE: OpenGL framebuffers has their origin in the bottom left. Other non-OpenGL APIs such as DirectX and
+        // Vulkan have their origin on the top right. For more information, refer to the comments for this
+        // function in rldx.c.
+        if (rlIsFramebufferOriginTopLeft() && rlIsAttachedToFramebuffer(texture.id))
+        {
+            source.height = -source.height;
+        }
+
         bool flipX = false;
 
         if (source.width < 0) { flipX = true; source.width *= -1; }

@@ -652,6 +652,7 @@ RLAPI unsigned int rlGetActiveFramebuffer(void);        // Get the currently act
 RLAPI void rlActiveDrawBuffers(int count);              // Activate multiple draw color buffers
 RLAPI void rlBlitFramebuffer(int srcX, int srcY, int srcWidth, int srcHeight, int dstX, int dstY, int dstWidth, int dstHeight, int bufferMask); // Blit active framebuffer to main framebuffer
 RLAPI void rlBindFramebuffer(unsigned int target, unsigned int framebuffer); // Bind framebuffer (FBO)
+RLAPI bool rlIsFramebufferOriginTopLeft();
 
 // General render state
 RLAPI void rlEnableColorBlend(void);                    // Enable color blending
@@ -749,6 +750,7 @@ RLAPI unsigned int rlLoadFramebuffer(void);                               // Loa
 RLAPI void rlFramebufferAttach(unsigned int fboId, unsigned int texId, int attachType, int texType, int mipLevel); // Attach texture/renderbuffer to a framebuffer
 RLAPI bool rlFramebufferComplete(unsigned int id);                        // Verify framebuffer is complete
 RLAPI void rlUnloadFramebuffer(unsigned int id);                          // Delete framebuffer from GPU
+RLAPI bool rlIsAttachedToFramebuffer(unsigned int texId);                 // Determine if the given texture is attached to a framebuffer.
 
 // Shaders management
 RLAPI unsigned int rlLoadShaderCode(const char *vsCode, const char *fsCode);    // Load shader from code strings
@@ -1842,6 +1844,11 @@ void rlBindFramebuffer(unsigned int target, unsigned int framebuffer)
 #if (defined(GRAPHICS_API_OPENGL_33) || defined(GRAPHICS_API_OPENGL_ES2)) && defined(RLGL_RENDER_TEXTURES_HINT)
     glBindFramebuffer(target, framebuffer);
 #endif
+}
+
+bool rlIsFramebufferOriginTopLeft()
+{
+    return false;
 }
 
 // Activate multiple draw color buffers
@@ -3749,6 +3756,12 @@ void rlUnloadFramebuffer(unsigned int id)
 
     TRACELOG(RL_LOG_INFO, "FBO: [ID %i] Unloaded framebuffer from VRAM (GPU)", id);
 #endif
+}
+
+bool rlIsAttachedToFramebuffer(unsigned int texId)
+{
+    // TODO: Implement when needed.
+    return false;
 }
 
 // Vertex data management
