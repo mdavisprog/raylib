@@ -2969,7 +2969,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
         resourceFlags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     }
 
-    DXTexture *texture = CreateTexture(transformedData.data, width, height, ToDXGIFormat(format), mipmapCount, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, resourceFlags);
+    DXTexture *texture = CreateTexture(transformedData.data, width, height, ToDXGIFormat(transformedData.format), mipmapCount, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, resourceFlags);
     if (texture == NULL)
     {
         return 0;
@@ -2988,7 +2988,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
 
     if (transformedData.data != NULL)
     {
-        if (!UploadTextureData(texture, 0, 0, width, height, StrideInBytes(format), transformedData.data))
+        if (!UploadTextureData(texture, 0, 0, width, height, StrideInBytes(transformedData.format), transformedData.data))
         {
             RemoveTexture(texture->id);
             return 0;
