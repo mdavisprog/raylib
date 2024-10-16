@@ -1720,6 +1720,14 @@ static DXTexture *CreateTexture(const void *data, int width, int height, DXGI_FO
         clearValue.DepthStencil.Stencil = 0;
         pClearValue = &clearValue;
     }
+    else if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+    {
+        clearValue.Color[0] = (float)dxState.clearcolorr / 255.0f;
+        clearValue.Color[1] = (float)dxState.clearcolorg / 255.0f;
+        clearValue.Color[2] = (float)dxState.clearcolorb / 255.0f;
+        clearValue.Color[3] = (float)dxState.clearcolora / 255.0f;
+        pClearValue = &clearValue;
+    }
 
     HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, state, pClearValue, &IID_ID3D12Resource, (LPVOID*)&texture.data);
     if (FAILED(result))
