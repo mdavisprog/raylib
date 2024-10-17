@@ -106,6 +106,8 @@ typedef struct {
     int width;
     int height;
     DXGI_FORMAT format;
+    int minFilter;
+    int magFilter;
 } DXTexture;
 
 typedef struct {
@@ -149,6 +151,7 @@ typedef struct {
     DescriptorHeap srv;
     DescriptorHeap rtv;
     DescriptorHeap dsv;
+    DescriptorHeap sampler;
 } DescriptorHeaps;
 
 typedef struct {
@@ -165,6 +168,11 @@ typedef struct {
     unsigned int depthAttachment;
     D3D12_RESOURCE_STATES currentState;
 } DXRenderTexture;
+
+typedef struct {
+    unsigned int point;
+    unsigned int linear;
+} DXSamplers;
 
 typedef struct {
     ID3D12Device9 *device;
@@ -190,6 +198,7 @@ typedef struct {
     ObjectPool shaders;
     ObjectPool renderTextures;
     DepthStencil depthStencil;
+    DXSamplers samplers;
 #if defined(DIRECTX_INFOQUEUE)
     ID3D12InfoQueue* infoQueue;
 #endif
@@ -374,6 +383,21 @@ static bool IsValidAdapter(IDXGIAdapter1* adapter)
     return true;
 }
 
+static DXTexture *GetTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.textures.pool.length; i++)
+    {
+        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
+
+        if (texture->id == id)
+        {
+            return texture;
+        }
+    }
+
+    return NULL;
+}
+
 static bool CreateDescriptorHeap(DescriptorHeap *heap, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS flags)
 {
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = { 0 };
@@ -539,7 +563,7 @@ static bool InitializeRootSignature()
         feature.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
     }
 
-    D3D12_DESCRIPTOR_RANGE1 descriptorRanges[2];
+    D3D12_DESCRIPTOR_RANGE1 descriptorRanges[3];
     descriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     descriptorRanges[0].NumDescriptors = 1;
     descriptorRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
@@ -554,7 +578,14 @@ static bool InitializeRootSignature()
     descriptorRanges[1].RegisterSpace = 0;
     descriptorRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER1 parameters[2];
+    descriptorRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+    descriptorRanges[2].NumDescriptors = 1;
+    descriptorRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    descriptorRanges[2].BaseShaderRegister = 0;
+    descriptorRanges[2].RegisterSpace = 0;
+    descriptorRanges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER1 parameters[3];
     parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     parameters[0].DescriptorTable.NumDescriptorRanges = 1;
@@ -565,27 +596,17 @@ static bool InitializeRootSignature()
     parameters[1].DescriptorTable.NumDescriptorRanges = 1;
     parameters[1].DescriptorTable.pDescriptorRanges = &descriptorRanges[1];
 
-    D3D12_STATIC_SAMPLER_DESC sampler = { 0 };
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    sampler.MipLODBias = 0.0f;
-    sampler.MaxAnisotropy = 0;
-    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
-    sampler.MinLOD = 0.0f;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;
-    sampler.RegisterSpace = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    parameters[2].DescriptorTable.NumDescriptorRanges = 1;
+    parameters[2].DescriptorTable.pDescriptorRanges = &descriptorRanges[2];
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc = { 0 };
     rootSignatureDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
     rootSignatureDesc.Desc_1_1.NumParameters = _countof(parameters);
     rootSignatureDesc.Desc_1_1.pParameters = parameters;
-    rootSignatureDesc.Desc_1_1.NumStaticSamplers = 1;
-    rootSignatureDesc.Desc_1_1.pStaticSamplers = &sampler;
+    rootSignatureDesc.Desc_1_1.NumStaticSamplers = 0;
+    rootSignatureDesc.Desc_1_1.pStaticSamplers = NULL;
     rootSignatureDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ID3DBlob* signature = NULL;
@@ -756,6 +777,52 @@ static bool InitializeConstantBuffer()
     }
 
     return true;
+}
+
+static bool InitializeSamplers()
+{
+    D3D12_SAMPLER_DESC sampler = { 0 };
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MipLODBias = 0.0f;
+    sampler.MaxAnisotropy = 0;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampler.BorderColor[0] = 0.0f;
+    sampler.BorderColor[1] = 0.0f;
+    sampler.BorderColor[2] = 0.0f;
+    sampler.BorderColor[3] = 0.0f;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+
+    driver.samplers.point = AllocateDescriptorHandles(&driver.heaps.sampler, 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE pointHandle = CPUHandle(&driver.heaps.sampler, driver.samplers.point);
+    driver.device->lpVtbl->CreateSampler(driver.device, &sampler, pointHandle);
+
+    sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    driver.samplers.linear = AllocateDescriptorHandles(&driver.heaps.sampler, 1);
+    D3D12_CPU_DESCRIPTOR_HANDLE linearHandle = CPUHandle(&driver.heaps.sampler, driver.samplers.linear);
+    driver.device->lpVtbl->CreateSampler(driver.device, &sampler, linearHandle);
+
+    return true;
+}
+
+static void BindSampler(unsigned int texId)
+{
+    unsigned int handle = driver.samplers.point;
+
+    DXTexture *texture = GetTexture(texId);
+    if (texture != NULL)
+    {
+        if (texture->minFilter == RL_TEXTURE_FILTER_LINEAR && texture->magFilter == RL_TEXTURE_FILTER_LINEAR)
+        {
+            handle = driver.samplers.linear;
+        }
+    }
+
+    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = GPUHandle(&driver.heaps.sampler, handle);
+    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 2, gpuHandle);
 }
 
 static bool InitializeDepthStencil(int width, int height)
@@ -1500,21 +1567,6 @@ static Matrix rlMatrixTranspose(Matrix mat)
     result.m15 = mat.m15;
 
     return result;
-}
-
-static DXTexture *GetTexture(unsigned int id)
-{
-    for (size_t i = 0; i < driver.textures.pool.length; i++)
-    {
-        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
-
-        if (texture->id == id)
-        {
-            return texture;
-        }
-    }
-
-    return NULL;
 }
 
 static void BindTexture(unsigned int id)
@@ -2300,7 +2352,24 @@ void rlEnableTexture(unsigned int id) {}
 void rlDisableTexture(void) {}
 void rlEnableTextureCubemap(unsigned int id) {}
 void rlDisableTextureCubemap(void) {}
-void rlTextureParameters(unsigned int id, int param, int value) {}
+
+void rlTextureParameters(unsigned int id, int param, int value)
+{
+    DXTexture *texture = GetTexture(id);
+    if (texture == NULL)
+    {
+        DXTRACELOG(RL_LOG_WARNING, "Invalid texture id (%d) supplied to rlTextureParameters!", id);
+        return;
+    }
+
+    switch (param)
+    {
+    case RL_TEXTURE_MIN_FILTER: texture->minFilter = value; break;
+    case RL_TEXTURE_MAG_FILTER: texture->magFilter = value; break;
+    default: break;
+    }
+}
+
 void rlCubemapParameters(unsigned int id, int param, int value) {}
 
 // Shader state
@@ -2491,7 +2560,18 @@ void rlglInit(int width, int height)
         return;
     }
 
+    if (!CreateDescriptorHeap(&driver.heaps.sampler, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, 2, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failted to create sampler descriptors!");
+        return;
+    }
+
     if (!InitializeRootSignature())
+    {
+        return;
+    }
+
+    if (!InitializeSamplers())
     {
         return;
     }
@@ -2606,6 +2686,7 @@ void rlglClose(void)
     DestroyDescriptorHeap(&driver.heaps.dsv);
     DestroyDescriptorHeap(&driver.heaps.rtv);
     DestroyDescriptorHeap(&driver.heaps.srv);
+    DestroyDescriptorHeap(&driver.heaps.sampler);
 
     DXRELEASE(driver.constantBuffer);
     DXRELEASE(driver.renderTargets[0]);
@@ -2789,7 +2870,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     SetScissor();
     BindRootSignature();
 
-    ID3D12DescriptorHeap* heaps[] = { driver.heaps.srv.descriptorHeap };
+    ID3D12DescriptorHeap* heaps[] = { driver.heaps.srv.descriptorHeap, driver.heaps.sampler.descriptorHeap };
     driver.commandList->lpVtbl->SetDescriptorHeaps(driver.commandList, _countof(heaps), heaps);
 
     D3D12_GPU_DESCRIPTOR_HANDLE constantBufferHandle = GPUHandle(&driver.heaps.srv, driver.constantBufferHandle);
@@ -2818,6 +2899,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
                 rlDrawCall *draw = &batch->draws[i];
 
                 BindTexture(draw->textureId);
+                BindSampler(draw->textureId);
 
                 if (draw->mode == RL_LINES)
                 {
