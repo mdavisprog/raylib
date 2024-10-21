@@ -3107,7 +3107,22 @@ unsigned int rlLoadTextureDepth(int width, int height, bool useRenderBuffer)
 }
 
 unsigned int rlLoadTextureCubemap(const void *data, int size, int format) { return 0; }
-void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int height, int format, const void *data) {}
+
+void rlUpdateTexture(unsigned int id, int offsetX, int offsetY, int width, int height, int format, const void *data)
+{
+    DXTexture *texture = GetTexture(id);
+    if (texture == NULL)
+    {
+        DXTRACELOG(RL_LOG_WARNING, "Invalid texture id '%d' in rlUpdateTexture!", id);
+        return;
+    }
+
+    if (!UploadTextureData(texture, offsetX, offsetY, width, height, StrideInBytes(format), data))
+    {
+        DXTRACELOG(RL_LOG_WARNING, "Failed to update texture!");
+    }
+}
+
 void rlGetGlTextureFormats(int format, unsigned int *glInternalFormat, unsigned int *glFormat, unsigned int *glType) {}
 const char *rlGetPixelFormatName(unsigned int format) { return ""; }
 void rlUnloadTexture(unsigned int id) {}
