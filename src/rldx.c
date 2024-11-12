@@ -3127,7 +3127,165 @@ void rlGetGlTextureFormats(int format, unsigned int *glInternalFormat, unsigned 
 const char *rlGetPixelFormatName(unsigned int format) { return ""; }
 void rlUnloadTexture(unsigned int id) {}
 void rlGenTextureMipmaps(unsigned int id, int width, int height, int format, int *mipmaps) {}
-void *rlReadTexturePixels(unsigned int id, int width, int height, int format) { return NULL; }
+
+void *rlReadTexturePixels(unsigned int id, int width, int height, int format)
+{
+    // TODO: Look at using a separate command list instead of the one used to render.
+
+    DXTexture* texture = GetTexture(id);
+    if (texture == NULL)
+    {
+        DXTRACELOG(RL_LOG_WARNING, "Invalid texture with id '%d'!", id);
+        return NULL;
+    }
+
+    D3D12_RESOURCE_DESC desc = { 0 };
+    texture->data->lpVtbl->GetDesc(texture->data, &desc);
+
+    UINT64 totalBytes = 0;
+    UINT64 rowSizeInBytes = 0;
+    UINT numRows = 0;
+    driver.device->lpVtbl->GetCopyableFootprints(driver.device, &desc, 0, 1, 0, NULL, &numRows, &rowSizeInBytes, &totalBytes);
+
+    D3D12_HEAP_PROPERTIES srcHeapProperties = { 0 };
+    HRESULT result = texture->data->lpVtbl->GetHeapProperties(texture->data, &srcHeapProperties, NULL);
+    if (SUCCEEDED(result) && srcHeapProperties.Type == D3D12_HEAP_TYPE_READBACK)
+    {
+        return NULL;
+    }
+
+    D3D12_HEAP_PROPERTIES defaultHeapProperties = { 0 };
+    defaultHeapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+    defaultHeapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    defaultHeapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    defaultHeapProperties.CreationNodeMask = 1;
+    defaultHeapProperties.VisibleNodeMask = 1;
+
+    D3D12_HEAP_PROPERTIES readBackHeapProperties = defaultHeapProperties;
+    readBackHeapProperties.Type = D3D12_HEAP_TYPE_READBACK;
+
+    D3D12_RESOURCE_DESC bufferDesc = { 0 };
+    bufferDesc.DepthOrArraySize = 1;
+    bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufferDesc.Height = 1;
+    bufferDesc.Width = rowSizeInBytes * desc.Height;
+    bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufferDesc.MipLevels = 1;
+    bufferDesc.SampleDesc.Count = 1;
+
+    // TODO: Support multiple samples.
+    if (desc.SampleDesc.Count > 1)
+    {
+    }
+
+    ID3D12Resource* staging = NULL;
+    result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &readBackHeapProperties, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_COPY_DEST, NULL, &IID_ID3D12Resource, (LPVOID*)&staging);
+    if (FAILED(result))
+    {
+        return NULL;
+    }
+
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = texture->data;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT bufferFootprint = { 0 };
+    bufferFootprint.Footprint.Width = (UINT)desc.Width;
+    bufferFootprint.Footprint.Height = desc.Height;
+    bufferFootprint.Footprint.Depth = 1;
+    bufferFootprint.Footprint.RowPitch = (UINT)rowSizeInBytes;
+    bufferFootprint.Footprint.Format = desc.Format;
+
+    D3D12_TEXTURE_COPY_LOCATION copyDest = { 0 };
+    copyDest.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    copyDest.pResource = staging;
+    copyDest.PlacedFootprint = bufferFootprint;
+
+    D3D12_TEXTURE_COPY_LOCATION copySrc = { 0 };
+    copySrc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    copySrc.pResource = texture->data;
+    copySrc.SubresourceIndex = 0;
+
+    driver.commandList->lpVtbl->CopyTextureRegion(driver.commandList, &copyDest, 0, 0, 0, &copySrc, NULL);
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
+    ExecuteCommands();
+    WaitForPreviousFrame();
+    ResetCommands();
+    UpdateRenderTarget();
+
+    const UINT64 imageSize = rowSizeInBytes * (UINT64)numRows;
+    D3D12_RANGE writeRange = { 0 };
+    D3D12_RANGE readRange = { 0 };
+    readRange.Begin = 0;
+    readRange.End = (SIZE_T)imageSize;
+    void* mappedMemory = NULL;
+    result = staging->lpVtbl->Map(staging, 0, &readRange, &mappedMemory);
+    if (FAILED(result))
+    {
+        DXRELEASE(staging);
+        return NULL;
+    }
+
+    char* srcPtr = (char*)mappedMemory;
+    if (srcPtr == NULL)
+    {
+        staging->lpVtbl->Unmap(staging, 0, &writeRange);
+        DXRELEASE(staging);
+        return NULL;
+    }
+
+    char* pixels = (char*)malloc(imageSize);
+    char* dstPtr = pixels;
+    for (size_t row = 0; row < numRows; row++)
+    {
+        memcpy(dstPtr, srcPtr, rowSizeInBytes);
+        srcPtr += rowSizeInBytes;
+        dstPtr += rowSizeInBytes;
+    }
+
+    staging->lpVtbl->Unmap(staging, 0, &writeRange);
+    DXRELEASE(staging);
+
+    // TODO: Should we handle all format discrepancies?
+    // DirectX doesn't have a 24 bpp format so the pixels need to be converted here.
+    if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && format == RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8)
+    {
+        const size_t tempSize = width * height * 3;
+        char* temp = (char*)malloc(tempSize);
+
+        int srcOffset = 0;
+        int dstOffset = 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                temp[dstOffset + 0] = pixels[srcOffset + 0];
+                temp[dstOffset + 1] = pixels[srcOffset + 1];
+                temp[dstOffset + 2] = pixels[srcOffset + 2];
+
+                dstOffset += 3;
+                srcOffset += 4;
+            }
+        }
+
+        char* swap = pixels;
+        pixels = temp;
+        free(swap);
+    }
+
+    return pixels;
+}
+
 unsigned char *rlReadScreenPixels(int width, int height) { return ""; }
 
 // Framebuffer management (fbo)
