@@ -1580,7 +1580,7 @@ static DXGI_FORMAT ToDXGIFormat(rlPixelFormat format)
 {
     switch (format)
     {
-    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return DXGI_FORMAT_B4G4R4A4_UNORM;
+    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return DXGI_FORMAT_R8G8_UNORM;
     case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8:
     case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: return DXGI_FORMAT_R8G8B8A8_UNORM;
     default: break;
@@ -3066,7 +3066,7 @@ unsigned int rlLoadTexture(const void *data, int width, int height, int format, 
     }
 
     D3D12_SHADER_RESOURCE_VIEW_DESC shaderViewDesc = { 0 };
-    shaderViewDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    shaderViewDesc.Shader4ComponentMapping = format == RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA ? D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(0, 0, 0, 1) : D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     shaderViewDesc.Format = texture->format;
     shaderViewDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     shaderViewDesc.Texture2D.MipLevels = 1;
