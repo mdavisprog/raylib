@@ -1106,8 +1106,8 @@ static D3D12_GRAPHICS_PIPELINE_STATE_DESC CreatePipelineDesc(D3D12_PRIMITIVE_TOP
     graphicsDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
     graphicsDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
     graphicsDesc.RasterizerState.DepthClipEnable = TRUE;
-    graphicsDesc.RasterizerState.MultisampleEnable = TRUE;
-    graphicsDesc.RasterizerState.AntialiasedLineEnable = TRUE;
+    graphicsDesc.RasterizerState.MultisampleEnable = FALSE;
+    graphicsDesc.RasterizerState.AntialiasedLineEnable = FALSE;
     graphicsDesc.RasterizerState.ForcedSampleCount = 0;
     graphicsDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
