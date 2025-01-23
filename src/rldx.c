@@ -257,6 +257,10 @@ static double cullDistanceFar = RL_CULL_DISTANCE_FAR;
 // Utility functions
 //----------------------------------------------------------------------------------
 
+//
+// Vector
+//
+
 static Vector VectorCreate(size_t elementSize)
 {
     Vector result = { 0 };
@@ -346,6 +350,220 @@ static unsigned char *VectorGet(Vector *vector, size_t index)
     return &vector->data[vector->elementSize * index];
 }
 
+//
+// Utilities
+//
+
+static void TransitionResource(D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to, ID3D12Resource *resource)
+{
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.StateBefore = from;
+    barrier.Transition.StateAfter = to;
+    barrier.Transition.pResource = resource;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+}
+
+static bool PrepUploadData(DXVertexBuffer *buffer, void *data, size_t size)
+{
+    unsigned char *bufferData = NULL;
+    D3D12_RANGE range = { 0 };
+
+    HRESULT result = buffer->uploadBuffer->lpVtbl->Map(buffer->uploadBuffer, 0, &range, (LPVOID*)&bufferData);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_WARNING, "Failed to map resource for upload!");
+        return false;
+    }
+
+    memcpy(bufferData, data, size);
+
+    D3D12_RESOURCE_BARRIER barrier = { 0 };
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    barrier.Transition.pResource = buffer->buffer;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+    driver.commandList->lpVtbl->CopyBufferRegion(driver.commandList, buffer->buffer, 0, buffer->uploadBuffer, 0, size);
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
+
+    buffer->view.SizeInBytes = (UINT)size;
+
+    return true;
+}
+
+static Matrix rlMatrixIdentity(void)
+{
+    Matrix result = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+
+    return result;
+}
+
+// Get two matrix multiplication
+// NOTE: When multiplying matrices... the order matters!
+static Matrix rlMatrixMultiply(Matrix left, Matrix right)
+{
+    Matrix result = { 0 };
+
+    result.m0 = left.m0*right.m0 + left.m1*right.m4 + left.m2*right.m8 + left.m3*right.m12;
+    result.m1 = left.m0*right.m1 + left.m1*right.m5 + left.m2*right.m9 + left.m3*right.m13;
+    result.m2 = left.m0*right.m2 + left.m1*right.m6 + left.m2*right.m10 + left.m3*right.m14;
+    result.m3 = left.m0*right.m3 + left.m1*right.m7 + left.m2*right.m11 + left.m3*right.m15;
+    result.m4 = left.m4*right.m0 + left.m5*right.m4 + left.m6*right.m8 + left.m7*right.m12;
+    result.m5 = left.m4*right.m1 + left.m5*right.m5 + left.m6*right.m9 + left.m7*right.m13;
+    result.m6 = left.m4*right.m2 + left.m5*right.m6 + left.m6*right.m10 + left.m7*right.m14;
+    result.m7 = left.m4*right.m3 + left.m5*right.m7 + left.m6*right.m11 + left.m7*right.m15;
+    result.m8 = left.m8*right.m0 + left.m9*right.m4 + left.m10*right.m8 + left.m11*right.m12;
+    result.m9 = left.m8*right.m1 + left.m9*right.m5 + left.m10*right.m9 + left.m11*right.m13;
+    result.m10 = left.m8*right.m2 + left.m9*right.m6 + left.m10*right.m10 + left.m11*right.m14;
+    result.m11 = left.m8*right.m3 + left.m9*right.m7 + left.m10*right.m11 + left.m11*right.m15;
+    result.m12 = left.m12*right.m0 + left.m13*right.m4 + left.m14*right.m8 + left.m15*right.m12;
+    result.m13 = left.m12*right.m1 + left.m13*right.m5 + left.m14*right.m9 + left.m15*right.m13;
+    result.m14 = left.m12*right.m2 + left.m13*right.m6 + left.m14*right.m10 + left.m15*right.m14;
+    result.m15 = left.m12*right.m3 + left.m13*right.m7 + left.m14*right.m11 + left.m15*right.m15;
+
+    return result;
+}
+
+static Matrix rlMatrixTranspose(Matrix mat)
+{
+    Matrix result = { 0 };
+
+    result.m0 = mat.m0;
+    result.m1 = mat.m4;
+    result.m2 = mat.m8;
+    result.m3 = mat.m12;
+
+    result.m4 = mat.m1;
+    result.m5 = mat.m5;
+    result.m6 = mat.m9;
+    result.m7 = mat.m13;
+
+    result.m8 = mat.m2;
+    result.m9 = mat.m6;
+    result.m10 = mat.m10;
+    result.m11 = mat.m14;
+
+    result.m12 = mat.m3;
+    result.m13 = mat.m7;
+    result.m14 = mat.m11;
+    result.m15 = mat.m15;
+
+    return result;
+}
+
+static DXGI_FORMAT ToDXGIFormat(rlPixelFormat format)
+{
+    switch (format)
+    {
+    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return DXGI_FORMAT_R8G8_UNORM;
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8:
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    default: break;
+    }
+
+    return DXGI_FORMAT_R8G8B8A8_UNORM;
+}
+
+static int StrideInBytes(rlPixelFormat format)
+{
+    switch (format)
+    {
+    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return 2;
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8: return 3;
+    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: return 4;
+    default: break;
+    }
+
+    return 4;
+}
+
+typedef struct {
+    void *data;
+    bool needsFree;
+    int format;
+} TransformedData;
+
+static TransformedData TransformData(const void *data, int width, int height, int format)
+{
+    TransformedData result = { 0 };
+    result.data = (void*)data;
+    result.needsFree = false;
+    result.format = format;
+
+    if (data == NULL)
+    {
+        return result;
+    }
+
+    if (format == RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8)
+    {
+        unsigned char *src = (char*)data;
+        unsigned char *dst = (char*)RL_MALLOC(width * height * 4 * sizeof(char));
+
+        int srcOffset = 0;
+        int dstOffset = 0;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                dst[dstOffset + 0] = src[srcOffset + 0];
+                dst[dstOffset + 1] = src[srcOffset + 1];
+                dst[dstOffset + 2] = src[srcOffset + 2];
+                dst[dstOffset + 3] = 255;
+
+                srcOffset += 3;
+                dstOffset += 4;
+            }
+        }
+
+        result.data = dst;
+        result.needsFree = true;
+        result.format = RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    }
+
+    return result;
+}
+
+static void SetViewport()
+{
+    D3D12_VIEWPORT viewport = { 0 };
+    viewport.TopLeftX = (FLOAT)dxState.viewportx;
+    viewport.TopLeftY = (FLOAT)dxState.viewporty;
+    viewport.Width = (FLOAT)dxState.viewportWidth;
+    viewport.Height = (FLOAT)dxState.viewportHeight;
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    driver.commandList->lpVtbl->RSSetViewports(driver.commandList, 1, &viewport);
+}
+
+static void SetScissor()
+{
+    D3D12_RECT scissor = { 0 };
+    scissor.left = dxState.scissorx;
+    scissor.top = dxState.scissory;
+    scissor.right = scissor.left + dxState.scissorWidth;
+    scissor.bottom = scissor.top + dxState.scissorHeight;
+    driver.commandList->lpVtbl->RSSetScissorRects(driver.commandList, 1, &scissor);
+}
+
+//
+// Adapter
+//
+
 static bool EnumAdapter(UINT index, IDXGIFactory7* factory, IDXGIAdapter1** adapter)
 {
     HRESULT result = factory->lpVtbl->EnumAdapterByGpuPreference(factory, index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, &IID_IDXGIAdapter1, (LPVOID*)&(*adapter));
@@ -383,20 +601,27 @@ static bool IsValidAdapter(IDXGIAdapter1* adapter)
     return true;
 }
 
-static DXTexture *GetTexture(unsigned int id)
+//
+// GPU/CPU handle helpers
+//
+
+static D3D12_CPU_DESCRIPTOR_HANDLE CPUHandle(DescriptorHeap *heap, UINT handle)
 {
-    for (size_t i = 0; i < driver.textures.pool.length; i++)
-    {
-        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
-
-        if (texture->id == id)
-        {
-            return texture;
-        }
-    }
-
-    return NULL;
+    D3D12_CPU_DESCRIPTOR_HANDLE result = heap->cpuHandle;
+    result.ptr += handle * heap->heapSize;
+    return result;
 }
+
+static D3D12_GPU_DESCRIPTOR_HANDLE GPUHandle(DescriptorHeap *heap, UINT handle)
+{
+    D3D12_GPU_DESCRIPTOR_HANDLE result = heap->gpuHandle;
+    result.ptr += handle * heap->heapSize;
+    return result;
+}
+
+//
+// Descriptors
+//
 
 static bool CreateDescriptorHeap(DescriptorHeap *heap, D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS flags)
 {
@@ -455,6 +680,278 @@ static unsigned int AllocateDescriptorHandles(DescriptorHeap *heap, unsigned int
 
     return result;
 }
+
+//
+// Texture
+//
+
+static DXTexture *GetTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.textures.pool.length; i++)
+    {
+        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
+
+        if (texture->id == id)
+        {
+            return texture;
+        }
+    }
+
+    return NULL;
+}
+
+static void BindTexture(unsigned int id)
+{
+    DXTexture *texture = GetTexture(id);
+    D3D12_GPU_DESCRIPTOR_HANDLE handle = GPUHandle(&driver.heaps.srv, texture->handle);
+    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, handle);
+}
+
+static bool UploadTextureData(DXTexture *texture, int offsetX, int offsetY, int width, int height, int stride, const void *data)
+{
+    if (texture->upload != NULL)
+    {
+        DXRELEASE(texture->upload);
+    }
+
+    TransitionResource(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST, texture->data);
+
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC description = { 0 };
+    texture->data->lpVtbl->GetDesc(texture->data, &description);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts = { 0 };
+    UINT numRows;
+    UINT64 rowSizeInBytes;
+    UINT64 totalBytes;
+    driver.device->lpVtbl->GetCopyableFootprints(driver.device, &description, 0, 1, 0, &layouts, &numRows, &rowSizeInBytes, &totalBytes);
+
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    description.Format = DXGI_FORMAT_UNKNOWN;
+    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    description.Width = totalBytes;
+    description.Height = 1;
+    
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&texture->upload);
+    if (FAILED(result))
+    {
+        DXRELEASE(texture->upload);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture upload resource!");
+        return false;
+    }
+
+    unsigned char *uploadBuffer = NULL;
+    result = texture->upload->lpVtbl->Map(texture->upload, 0, NULL, (LPVOID*)&uploadBuffer);
+    if (FAILED(result))
+    {
+        DXRELEASE(texture->upload);
+        DXTRACELOG(RL_LOG_ERROR, "Failed to map upload resource memory!");
+        return false;
+    }
+
+    D3D12_MEMCPY_DEST memcpyDest = { 0 };
+    memcpyDest.pData = uploadBuffer + layouts.Offset;
+    memcpyDest.RowPitch = layouts.Footprint.RowPitch;
+    memcpyDest.SlicePitch = (UINT64)layouts.Footprint.RowPitch * (UINT64)numRows;
+
+    D3D12_SUBRESOURCE_DATA textureData = { 0 };
+    textureData.pData = data;
+    textureData.RowPitch = width * stride;
+    textureData.SlicePitch = textureData.RowPitch * height;
+
+    for (unsigned int slice = 0; slice < layouts.Footprint.Depth; slice++)
+    {
+        unsigned char *dest = (unsigned char*)memcpyDest.pData + memcpyDest.SlicePitch * slice;
+        const unsigned char *src = (unsigned char*)textureData.pData + textureData.SlicePitch * (UINT64)slice;
+
+        for (unsigned int row = 0; row < numRows; row++)
+        {
+            memcpy(dest + memcpyDest.RowPitch * row, src + textureData.RowPitch * (UINT64)row, rowSizeInBytes);
+        }
+    }
+
+    texture->upload->lpVtbl->Unmap(texture->upload, 0, NULL);
+
+    D3D12_TEXTURE_COPY_LOCATION copyDest = { 0 };
+    copyDest.pResource = texture->data;
+    copyDest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    copyDest.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION copySrc = { 0 };
+    copySrc.pResource = texture->upload;
+    copySrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    copySrc.PlacedFootprint = layouts;
+
+    driver.commandList->lpVtbl->CopyTextureRegion(driver.commandList, &copyDest, 0, 0, 0, &copySrc, NULL);
+
+    TransitionResource(D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, texture->data);
+
+    return true;
+}
+
+static DXTexture *CreateTexture(const void *data, int width, int height, DXGI_FORMAT format, int mipmapCount, D3D12_RESOURCE_STATES state, D3D12_RESOURCE_FLAGS resourceFlags)
+{
+    DXTexture texture = { 0 };
+
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC description = { 0 };
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Alignment = 0;
+    description.Width = width;
+    description.Height = height;
+    description.DepthOrArraySize = 1;
+    description.MipLevels = 1;
+    description.Format = format;
+    description.SampleDesc.Count = 1;
+    description.SampleDesc.Quality = 0;
+    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    description.Flags = resourceFlags;
+
+    D3D12_CLEAR_VALUE clearValue = { 0 };
+    clearValue.Format = format;
+    D3D12_CLEAR_VALUE *pClearValue = NULL;
+
+    if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
+    {
+        clearValue.DepthStencil.Depth = 1.0f;
+        clearValue.DepthStencil.Stencil = 0;
+        pClearValue = &clearValue;
+    }
+    else if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
+    {
+        clearValue.Color[0] = (float)dxState.clearcolorr / 255.0f;
+        clearValue.Color[1] = (float)dxState.clearcolorg / 255.0f;
+        clearValue.Color[2] = (float)dxState.clearcolorb / 255.0f;
+        clearValue.Color[3] = (float)dxState.clearcolora / 255.0f;
+        pClearValue = &clearValue;
+    }
+
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, state, pClearValue, &IID_ID3D12Resource, (LPVOID*)&texture.data);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture resource!");
+        return NULL;
+    }
+
+    texture.id = driver.textures.index++;
+    texture.width = width;
+    texture.height = height;
+    texture.format = description.Format;
+
+    VectorPush(&driver.textures.pool, &texture);
+
+    return (DXTexture*)VectorGet(&driver.textures.pool, driver.textures.pool.length - 1);
+}
+
+static void DestroyTexture(DXTexture *texture)
+{
+    if (texture == NULL)
+    {
+        return;
+    }
+
+    texture->id = 0;
+    texture->format = DXGI_FORMAT_UNKNOWN;
+    DXRELEASE(texture->data);
+    DXRELEASE(texture->upload);
+}
+
+static bool RemoveTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.textures.pool.length; i++)
+    {
+        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
+
+        if (texture->id == id)
+        {
+            DestroyTexture(texture);
+            VectorRemove(&driver.textures.pool, i);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+//
+// Render Textures
+//
+
+static unsigned int CreateRenderTexture()
+{
+    DXRenderTexture renderTexture = { 0 };
+    renderTexture.id = driver.renderTextures.index++;
+    renderTexture.rtvHandle = AllocateDescriptorHandles(&driver.heaps.rtv, 1);
+    renderTexture.srvHandle = AllocateDescriptorHandles(&driver.heaps.srv, 1);
+    renderTexture.dsvHandle = AllocateDescriptorHandles(&driver.heaps.dsv, 1);
+    renderTexture.currentState = D3D12_RESOURCE_STATE_COMMON;
+
+    VectorPush(&driver.renderTextures.pool, &renderTexture);
+    return renderTexture.id;
+}
+
+static DXRenderTexture *GetRenderTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
+    {
+        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
+
+        if (renderTexture->id == id)
+        {
+            return renderTexture;
+        }
+    }
+
+    return NULL;
+}
+
+static void DestroyRenderTexture(DXRenderTexture *renderTexture)
+{
+    if (renderTexture == NULL)
+    {
+        return;
+    }
+
+    renderTexture->id = 0;
+    renderTexture->rtvHandle = 0;
+    renderTexture->srvHandle = 0;
+    renderTexture->dsvHandle = 0;
+    renderTexture->currentState = D3D12_RESOURCE_STATE_COMMON;
+}
+
+static bool RemoveRenderTexture(unsigned int id)
+{
+    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
+    {
+        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
+
+        if (renderTexture->id == id)
+        {
+            DestroyRenderTexture(renderTexture);
+            VectorRemove(&driver.renderTextures.pool, i);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+//
+// Initialization
+//
 
 static bool InitializeDevice()
 {
@@ -652,20 +1149,6 @@ static bool InitializeFence()
     }
 
     return true;
-}
-
-static D3D12_CPU_DESCRIPTOR_HANDLE CPUHandle(DescriptorHeap *heap, UINT handle)
-{
-    D3D12_CPU_DESCRIPTOR_HANDLE result = heap->cpuHandle;
-    result.ptr += handle * heap->heapSize;
-    return result;
-}
-
-static D3D12_GPU_DESCRIPTOR_HANDLE GPUHandle(DescriptorHeap *heap, UINT handle)
-{
-    D3D12_GPU_DESCRIPTOR_HANDLE result = heap->gpuHandle;
-    result.ptr += handle * heap->heapSize;
-    return result;
 }
 
 static bool InitializeRenderTarget(UINT index)
@@ -871,6 +1354,10 @@ static bool InitializeDepthStencil(int width, int height)
     return true;
 }
 
+//
+// InfoQueue
+//
+
 #if defined(DIRECTX_INFOQUEUE)
 static bool InitializeInfoQueue()
 {
@@ -915,6 +1402,10 @@ static void PollInfoQueue()
     driver.infoQueue->lpVtbl->ClearStoredMessages(driver.infoQueue);
 }
 #endif
+
+//
+// Commands
+//
 
 static void WaitForPreviousFrame()
 {
@@ -965,39 +1456,9 @@ static bool ResetCommands()
     return true;
 }
 
-static void TransitionResource(D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to, ID3D12Resource *resource)
-{
-    D3D12_RESOURCE_BARRIER barrier = { 0 };
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.StateBefore = from;
-    barrier.Transition.StateAfter = to;
-    barrier.Transition.pResource = resource;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
-}
-
-static void SetViewport()
-{
-    D3D12_VIEWPORT viewport = { 0 };
-    viewport.TopLeftX = (FLOAT)dxState.viewportx;
-    viewport.TopLeftY = (FLOAT)dxState.viewporty;
-    viewport.Width = (FLOAT)dxState.viewportWidth;
-    viewport.Height = (FLOAT)dxState.viewportHeight;
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-    driver.commandList->lpVtbl->RSSetViewports(driver.commandList, 1, &viewport);
-}
-
-static void SetScissor()
-{
-    D3D12_RECT scissor = { 0 };
-    scissor.left = dxState.scissorx;
-    scissor.top = dxState.scissory;
-    scissor.right = scissor.left + dxState.scissorWidth;
-    scissor.bottom = scissor.top + dxState.scissorHeight;
-    driver.commandList->lpVtbl->RSSetScissorRects(driver.commandList, 1, &scissor);
-}
+//
+// Shaders
+//
 
 static DXShader *GetShader(unsigned int id)
 {
@@ -1030,6 +1491,10 @@ static bool RemoveShader(unsigned int id)
 
     return false;
 }
+
+//
+// Pipeline
+//
 
 static D3D12_BLEND_DESC CreateBlendDesc(rlBlendMode mode)
 {
@@ -1312,6 +1777,10 @@ static bool InitializeDefaultShader()
     return dxState.defaultShaderId != 0 && dxState.defaultLineShaderId;
 }
 
+//
+// Vertex/Render Buffer
+//
+
 static DXVertexBuffer CreateVertexBuffer(UINT64 size, UINT stride)
 {
     DXVertexBuffer buffer = { 0 };
@@ -1470,422 +1939,9 @@ static DXRenderBuffer *GetRenderBuffer(unsigned int id)
     return NULL;
 }
 
-static bool PrepUploadData(DXVertexBuffer *buffer, void *data, size_t size)
-{
-    unsigned char *bufferData = NULL;
-    D3D12_RANGE range = { 0 };
-
-    HRESULT result = buffer->uploadBuffer->lpVtbl->Map(buffer->uploadBuffer, 0, &range, (LPVOID*)&bufferData);
-    if (FAILED(result))
-    {
-        DXTRACELOG(RL_LOG_WARNING, "Failed to map resource for upload!");
-        return false;
-    }
-
-    memcpy(bufferData, data, size);
-
-    D3D12_RESOURCE_BARRIER barrier = { 0 };
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier.Transition.pResource = buffer->buffer;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
-    driver.commandList->lpVtbl->CopyBufferRegion(driver.commandList, buffer->buffer, 0, buffer->uploadBuffer, 0, size);
-
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-    driver.commandList->lpVtbl->ResourceBarrier(driver.commandList, 1, &barrier);
-
-    buffer->view.SizeInBytes = (UINT)size;
-
-    return true;
-}
-
-static Matrix rlMatrixIdentity(void)
-{
-    Matrix result = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
-    };
-
-    return result;
-}
-
-// Get two matrix multiplication
-// NOTE: When multiplying matrices... the order matters!
-static Matrix rlMatrixMultiply(Matrix left, Matrix right)
-{
-    Matrix result = { 0 };
-
-    result.m0 = left.m0*right.m0 + left.m1*right.m4 + left.m2*right.m8 + left.m3*right.m12;
-    result.m1 = left.m0*right.m1 + left.m1*right.m5 + left.m2*right.m9 + left.m3*right.m13;
-    result.m2 = left.m0*right.m2 + left.m1*right.m6 + left.m2*right.m10 + left.m3*right.m14;
-    result.m3 = left.m0*right.m3 + left.m1*right.m7 + left.m2*right.m11 + left.m3*right.m15;
-    result.m4 = left.m4*right.m0 + left.m5*right.m4 + left.m6*right.m8 + left.m7*right.m12;
-    result.m5 = left.m4*right.m1 + left.m5*right.m5 + left.m6*right.m9 + left.m7*right.m13;
-    result.m6 = left.m4*right.m2 + left.m5*right.m6 + left.m6*right.m10 + left.m7*right.m14;
-    result.m7 = left.m4*right.m3 + left.m5*right.m7 + left.m6*right.m11 + left.m7*right.m15;
-    result.m8 = left.m8*right.m0 + left.m9*right.m4 + left.m10*right.m8 + left.m11*right.m12;
-    result.m9 = left.m8*right.m1 + left.m9*right.m5 + left.m10*right.m9 + left.m11*right.m13;
-    result.m10 = left.m8*right.m2 + left.m9*right.m6 + left.m10*right.m10 + left.m11*right.m14;
-    result.m11 = left.m8*right.m3 + left.m9*right.m7 + left.m10*right.m11 + left.m11*right.m15;
-    result.m12 = left.m12*right.m0 + left.m13*right.m4 + left.m14*right.m8 + left.m15*right.m12;
-    result.m13 = left.m12*right.m1 + left.m13*right.m5 + left.m14*right.m9 + left.m15*right.m13;
-    result.m14 = left.m12*right.m2 + left.m13*right.m6 + left.m14*right.m10 + left.m15*right.m14;
-    result.m15 = left.m12*right.m3 + left.m13*right.m7 + left.m14*right.m11 + left.m15*right.m15;
-
-    return result;
-}
-
-static Matrix rlMatrixTranspose(Matrix mat)
-{
-    Matrix result = { 0 };
-
-    result.m0 = mat.m0;
-    result.m1 = mat.m4;
-    result.m2 = mat.m8;
-    result.m3 = mat.m12;
-
-    result.m4 = mat.m1;
-    result.m5 = mat.m5;
-    result.m6 = mat.m9;
-    result.m7 = mat.m13;
-
-    result.m8 = mat.m2;
-    result.m9 = mat.m6;
-    result.m10 = mat.m10;
-    result.m11 = mat.m14;
-
-    result.m12 = mat.m3;
-    result.m13 = mat.m7;
-    result.m14 = mat.m11;
-    result.m15 = mat.m15;
-
-    return result;
-}
-
-static void BindTexture(unsigned int id)
-{
-    DXTexture *texture = GetTexture(id);
-    D3D12_GPU_DESCRIPTOR_HANDLE handle = GPUHandle(&driver.heaps.srv, texture->handle);
-    driver.commandList->lpVtbl->SetGraphicsRootDescriptorTable(driver.commandList, 0, handle);
-}
-
-static DXGI_FORMAT ToDXGIFormat(rlPixelFormat format)
-{
-    switch (format)
-    {
-    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return DXGI_FORMAT_R8G8_UNORM;
-    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8:
-    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: return DXGI_FORMAT_R8G8B8A8_UNORM;
-    default: break;
-    }
-
-    return DXGI_FORMAT_R8G8B8A8_UNORM;
-}
-
-static int StrideInBytes(rlPixelFormat format)
-{
-    switch (format)
-    {
-    case RL_PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA: return 2;
-    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8: return 3;
-    case RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8: return 4;
-    default: break;
-    }
-
-    return 4;
-}
-
-typedef struct {
-    void *data;
-    bool needsFree;
-    int format;
-} TransformedData;
-
-static TransformedData TransformData(const void *data, int width, int height, int format)
-{
-    TransformedData result = { 0 };
-    result.data = (void*)data;
-    result.needsFree = false;
-    result.format = format;
-
-    if (data == NULL)
-    {
-        return result;
-    }
-
-    if (format == RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8)
-    {
-        unsigned char *src = (char*)data;
-        unsigned char *dst = (char*)RL_MALLOC(width * height * 4 * sizeof(char));
-
-        int srcOffset = 0;
-        int dstOffset = 0;
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
-            {
-                dst[dstOffset + 0] = src[srcOffset + 0];
-                dst[dstOffset + 1] = src[srcOffset + 1];
-                dst[dstOffset + 2] = src[srcOffset + 2];
-                dst[dstOffset + 3] = 255;
-
-                srcOffset += 3;
-                dstOffset += 4;
-            }
-        }
-
-        result.data = dst;
-        result.needsFree = true;
-        result.format = RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-    }
-
-    return result;
-}
-
-static bool UploadTextureData(DXTexture *texture, int offsetX, int offsetY, int width, int height, int stride, const void *data)
-{
-    if (texture->upload != NULL)
-    {
-        DXRELEASE(texture->upload);
-    }
-
-    TransitionResource(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST, texture->data);
-
-    D3D12_HEAP_PROPERTIES heap = { 0 };
-    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    heap.CreationNodeMask = 1;
-    heap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC description = { 0 };
-    texture->data->lpVtbl->GetDesc(texture->data, &description);
-
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts = { 0 };
-    UINT numRows;
-    UINT64 rowSizeInBytes;
-    UINT64 totalBytes;
-    driver.device->lpVtbl->GetCopyableFootprints(driver.device, &description, 0, 1, 0, &layouts, &numRows, &rowSizeInBytes, &totalBytes);
-
-    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    description.Format = DXGI_FORMAT_UNKNOWN;
-    description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    description.Width = totalBytes;
-    description.Height = 1;
-    
-    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, (LPVOID*)&texture->upload);
-    if (FAILED(result))
-    {
-        DXRELEASE(texture->upload);
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture upload resource!");
-        return false;
-    }
-
-    unsigned char *uploadBuffer = NULL;
-    result = texture->upload->lpVtbl->Map(texture->upload, 0, NULL, (LPVOID*)&uploadBuffer);
-    if (FAILED(result))
-    {
-        DXRELEASE(texture->upload);
-        DXTRACELOG(RL_LOG_ERROR, "Failed to map upload resource memory!");
-        return false;
-    }
-
-    D3D12_MEMCPY_DEST memcpyDest = { 0 };
-    memcpyDest.pData = uploadBuffer + layouts.Offset;
-    memcpyDest.RowPitch = layouts.Footprint.RowPitch;
-    memcpyDest.SlicePitch = (UINT64)layouts.Footprint.RowPitch * (UINT64)numRows;
-
-    D3D12_SUBRESOURCE_DATA textureData = { 0 };
-    textureData.pData = data;
-    textureData.RowPitch = width * stride;
-    textureData.SlicePitch = textureData.RowPitch * height;
-
-    for (unsigned int slice = 0; slice < layouts.Footprint.Depth; slice++)
-    {
-        unsigned char *dest = (unsigned char*)memcpyDest.pData + memcpyDest.SlicePitch * slice;
-        const unsigned char *src = (unsigned char*)textureData.pData + textureData.SlicePitch * (UINT64)slice;
-
-        for (unsigned int row = 0; row < numRows; row++)
-        {
-            memcpy(dest + memcpyDest.RowPitch * row, src + textureData.RowPitch * (UINT64)row, rowSizeInBytes);
-        }
-    }
-
-    texture->upload->lpVtbl->Unmap(texture->upload, 0, NULL);
-
-    D3D12_TEXTURE_COPY_LOCATION copyDest = { 0 };
-    copyDest.pResource = texture->data;
-    copyDest.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    copyDest.SubresourceIndex = 0;
-
-    D3D12_TEXTURE_COPY_LOCATION copySrc = { 0 };
-    copySrc.pResource = texture->upload;
-    copySrc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    copySrc.PlacedFootprint = layouts;
-
-    driver.commandList->lpVtbl->CopyTextureRegion(driver.commandList, &copyDest, 0, 0, 0, &copySrc, NULL);
-
-    TransitionResource(D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, texture->data);
-
-    return true;
-}
-
-static DXTexture *CreateTexture(const void *data, int width, int height, DXGI_FORMAT format, int mipmapCount, D3D12_RESOURCE_STATES state, D3D12_RESOURCE_FLAGS resourceFlags)
-{
-    DXTexture texture = { 0 };
-
-    D3D12_HEAP_PROPERTIES heap = { 0 };
-    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    heap.CreationNodeMask = 1;
-    heap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC description = { 0 };
-    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    description.Alignment = 0;
-    description.Width = width;
-    description.Height = height;
-    description.DepthOrArraySize = 1;
-    description.MipLevels = 1;
-    description.Format = format;
-    description.SampleDesc.Count = 1;
-    description.SampleDesc.Quality = 0;
-    description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    description.Flags = resourceFlags;
-
-    D3D12_CLEAR_VALUE clearValue = { 0 };
-    clearValue.Format = format;
-    D3D12_CLEAR_VALUE *pClearValue = NULL;
-
-    if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
-    {
-        clearValue.DepthStencil.Depth = 1.0f;
-        clearValue.DepthStencil.Stencil = 0;
-        pClearValue = &clearValue;
-    }
-    else if (resourceFlags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
-    {
-        clearValue.Color[0] = (float)dxState.clearcolorr / 255.0f;
-        clearValue.Color[1] = (float)dxState.clearcolorg / 255.0f;
-        clearValue.Color[2] = (float)dxState.clearcolorb / 255.0f;
-        clearValue.Color[3] = (float)dxState.clearcolora / 255.0f;
-        pClearValue = &clearValue;
-    }
-
-    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &description, state, pClearValue, &IID_ID3D12Resource, (LPVOID*)&texture.data);
-    if (FAILED(result))
-    {
-        DXTRACELOG(RL_LOG_ERROR, "Failed to create texture resource!");
-        return NULL;
-    }
-
-    texture.id = driver.textures.index++;
-    texture.width = width;
-    texture.height = height;
-    texture.format = description.Format;
-
-    VectorPush(&driver.textures.pool, &texture);
-
-    return (DXTexture*)VectorGet(&driver.textures.pool, driver.textures.pool.length - 1);
-}
-
-static void DestroyTexture(DXTexture *texture)
-{
-    if (texture == NULL)
-    {
-        return;
-    }
-
-    texture->id = 0;
-    texture->format = DXGI_FORMAT_UNKNOWN;
-    DXRELEASE(texture->data);
-    DXRELEASE(texture->upload);
-}
-
-static bool RemoveTexture(unsigned int id)
-{
-    for (size_t i = 0; i < driver.textures.pool.length; i++)
-    {
-        DXTexture *texture = (DXTexture*)VectorGet(&driver.textures.pool, i);
-
-        if (texture->id == id)
-        {
-            DestroyTexture(texture);
-            VectorRemove(&driver.textures.pool, i);
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static unsigned int CreateRenderTexture()
-{
-    DXRenderTexture renderTexture = { 0 };
-    renderTexture.id = driver.renderTextures.index++;
-    renderTexture.rtvHandle = AllocateDescriptorHandles(&driver.heaps.rtv, 1);
-    renderTexture.srvHandle = AllocateDescriptorHandles(&driver.heaps.srv, 1);
-    renderTexture.dsvHandle = AllocateDescriptorHandles(&driver.heaps.dsv, 1);
-    renderTexture.currentState = D3D12_RESOURCE_STATE_COMMON;
-
-    VectorPush(&driver.renderTextures.pool, &renderTexture);
-    return renderTexture.id;
-}
-
-static DXRenderTexture *GetRenderTexture(unsigned int id)
-{
-    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
-    {
-        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
-
-        if (renderTexture->id == id)
-        {
-            return renderTexture;
-        }
-    }
-
-    return NULL;
-}
-
-static void DestroyRenderTexture(DXRenderTexture *renderTexture)
-{
-    if (renderTexture == NULL)
-    {
-        return;
-    }
-
-    renderTexture->id = 0;
-    renderTexture->rtvHandle = 0;
-    renderTexture->srvHandle = 0;
-    renderTexture->dsvHandle = 0;
-    renderTexture->currentState = D3D12_RESOURCE_STATE_COMMON;
-}
-
-static bool RemoveRenderTexture(unsigned int id)
-{
-    for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
-    {
-        DXRenderTexture *renderTexture = (DXRenderTexture*)VectorGet(&driver.renderTextures.pool, i);
-
-        if (renderTexture->id == id)
-        {
-            DestroyRenderTexture(renderTexture);
-            VectorRemove(&driver.renderTextures.pool, i);
-            return true;
-        }
-    }
-
-    return false;
-}
+//
+// Render Target
+//
 
 D3D12_CPU_DESCRIPTOR_HANDLE CurrentRenderTargetHandle()
 {
