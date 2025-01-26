@@ -222,6 +222,7 @@ typedef struct {
 } DXMatrices;
 
 typedef struct {
+    int *defaultShaderLocs;
     unsigned int defaultTextureId;
     unsigned int defaultShaderId;
     unsigned int shaderBlendModeIds[8]; // One for each blend mode. defaultShaderId is the 0 element.
@@ -1774,6 +1775,12 @@ static bool InitializeDefaultShader()
     RemoveShader(vShaderId);
     RemoveShader(fShaderId);
 
+    dxState.defaultShaderLocs = (int*)RL_CALLOC(RL_MAX_SHADER_LOCATIONS, sizeof(int));
+    for (int i = 0; i < RL_MAX_SHADER_LOCATIONS; i++)
+    {
+        dxState.defaultShaderLocs[i] = -1;
+    }
+
     return dxState.defaultShaderId != 0 && dxState.defaultLineShaderId;
 }
 
@@ -2703,6 +2710,7 @@ void rlglInit(int width, int height)
 void rlglClose(void)
 {
     rlUnloadRenderBatch(dxState.defaultBatch);
+    RL_FREE(dxState.defaultShaderLocs);
 
     for (size_t i = 0; i < driver.renderTextures.pool.length; i++)
     {
@@ -2787,8 +2795,15 @@ unsigned int rlGetTextureIdDefault(void)
     return dxState.defaultTextureId;
 }
 
-unsigned int rlGetShaderIdDefault(void) { return 0; }
-int *rlGetShaderLocsDefault(void) { return 0; }
+unsigned int rlGetShaderIdDefault(void)
+{
+    return dxState.defaultShaderId;
+}
+
+int *rlGetShaderLocsDefault(void)
+{
+    return dxState.defaultShaderLocs;
+}
 
 // Render batch management
 rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
