@@ -128,13 +128,17 @@ typedef struct {
 } DXVertexBuffer;
 
 typedef struct {
+    ID3D12Resource *buffer;
+    D3D12_INDEX_BUFFER_VIEW view;
+} DXIndexBuffer;
+
+typedef struct {
     unsigned int id;
     DXVertexBuffer vertex;
     DXVertexBuffer texcoord;
     DXVertexBuffer normal;
     DXVertexBuffer color;
-    ID3D12Resource *index;
-    D3D12_INDEX_BUFFER_VIEW indexView;
+    DXIndexBuffer index;
 } DXRenderBuffer;
 
 typedef struct {
@@ -1785,7 +1789,7 @@ static bool InitializeDefaultShader()
 }
 
 //
-// Vertex/Render Buffer
+// Vertex/Index/Render Buffer
 //
 
 static DXVertexBuffer CreateVertexBuffer(UINT64 size, UINT stride)
@@ -1846,13 +1850,55 @@ static void DestroyVertexBuffer(DXVertexBuffer *buffer)
     DXRELEASE(buffer->uploadBuffer);
 }
 
+static DXIndexBuffer CreateIndexBuffer(UINT64 size)
+{
+    DXIndexBuffer index = { 0 };
+
+    D3D12_HEAP_PROPERTIES heap = { 0 };
+    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    heap.CreationNodeMask = 1;
+    heap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC resource = { 0 };
+    resource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resource.Alignment = 0;
+    resource.Width = size;
+    resource.Height = 1;
+    resource.DepthOrArraySize = 1;
+    resource.MipLevels = 1;
+    resource.Format = DXGI_FORMAT_UNKNOWN;
+    resource.SampleDesc.Count = 1;
+    resource.SampleDesc.Quality = 0;
+    resource.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    resource.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &index.buffer);
+    if (FAILED(result))
+    {
+        DXTRACELOG(RL_LOG_ERROR, "Failed to create index buffer resource!");
+        return index;
+    }
+
+    index.view.BufferLocation = index.buffer->lpVtbl->GetGPUVirtualAddress(index.buffer);
+    index.view.Format = DXGI_FORMAT_R32_UINT;
+
+    return index;
+}
+
+static void DestroyIndexBuffer(DXIndexBuffer *index)
+{
+    DXRELEASE(index->buffer);
+}
+
 static void DestroyRenderBuffer(DXRenderBuffer *renderBuffer)
 {
     DestroyVertexBuffer(&renderBuffer->vertex);
     DestroyVertexBuffer(&renderBuffer->texcoord);
     DestroyVertexBuffer(&renderBuffer->normal);
     DestroyVertexBuffer(&renderBuffer->color);
-    DXRELEASE(renderBuffer->index);
+    DestroyIndexBuffer(&renderBuffer->index);
 }
 
 static unsigned int CreateRenderBuffer(
@@ -1894,36 +1940,13 @@ static unsigned int CreateRenderBuffer(
         return 0;
     }
 
-    D3D12_HEAP_PROPERTIES heap = { 0 };
-    heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    heap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    heap.CreationNodeMask = 1;
-    heap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC resource = { 0 };
-    resource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    resource.Alignment = 0;
-    resource.Width = indexBufferSize;
-    resource.Height = 1;
-    resource.DepthOrArraySize = 1;
-    resource.MipLevels = 1;
-    resource.Format = DXGI_FORMAT_UNKNOWN;
-    resource.SampleDesc.Count = 1;
-    resource.SampleDesc.Quality = 0;
-    resource.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    resource.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    HRESULT result = driver.device->lpVtbl->CreateCommittedResource(driver.device, &heap, D3D12_HEAP_FLAG_NONE, &resource, D3D12_RESOURCE_STATE_GENERIC_READ, NULL, &IID_ID3D12Resource, &buffer.index);
-    if (FAILED(result))
+    buffer.index = CreateIndexBuffer(indexBufferSize);
+    if (buffer.index.buffer == NULL)
     {
         DestroyRenderBuffer(&buffer);
         DXTRACELOG(RL_LOG_ERROR, "Failed to create index buffer resource!");
         return 0;
     }
-
-    buffer.indexView.BufferLocation = buffer.index->lpVtbl->GetGPUVirtualAddress(buffer.index);
-    buffer.indexView.Format = DXGI_FORMAT_R32_UINT;
 
     buffer.id = driver.renderBuffers.index++;
     VectorPush(&driver.renderBuffers.pool, &buffer);
@@ -2860,7 +2883,7 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
         unsigned char *indexData = NULL;
         D3D12_RANGE range = { 0 };
 
-        HRESULT result = renderBuffer->index->lpVtbl->Map(renderBuffer->index, 0, &range, (LPVOID*)&indexData);
+        HRESULT result = renderBuffer->index.buffer->lpVtbl->Map(renderBuffer->index.buffer, 0, &range, (LPVOID*)&indexData);
         if (FAILED(result))
         {
             DXTRACELOG(RL_LOG_WARNING, "Failed to map resource for upload!");
@@ -2868,8 +2891,8 @@ rlRenderBatch rlLoadRenderBatch(int numBuffers, int bufferElements)
 
         memcpy(indexData, batch.vertexBuffer[i].indices, indicesSize);
 
-        renderBuffer->index->lpVtbl->Unmap(renderBuffer->index, 0, NULL);
-        renderBuffer->indexView.SizeInBytes = (UINT)indicesSize;
+        renderBuffer->index.buffer->lpVtbl->Unmap(renderBuffer->index.buffer, 0, NULL);
+        renderBuffer->index.view.SizeInBytes = (UINT)indicesSize;
     }
 
     // Init draw calls tracking system
@@ -2909,10 +2932,7 @@ void rlUnloadRenderBatch(rlRenderBatch batch)
             continue;
         }
 
-        DXRELEASE(renderBuffer->vertex.buffer);
-        DXRELEASE(renderBuffer->texcoord.buffer);
-        DXRELEASE(renderBuffer->color.buffer);
-        DXRELEASE(renderBuffer->index);
+        DestroyRenderBuffer(renderBuffer);
     }
 
     RL_FREE(batch.vertexBuffer);
@@ -2957,7 +2977,7 @@ void rlDrawRenderBatch(rlRenderBatch *batch)
     {
         D3D12_VERTEX_BUFFER_VIEW views[4] = { renderBuffer->vertex.view, renderBuffer->texcoord.view, renderBuffer->normal.view, renderBuffer->color.view };
         driver.commandList->lpVtbl->IASetVertexBuffers(driver.commandList, 0, _countof(views), views);
-        driver.commandList->lpVtbl->IASetIndexBuffer(driver.commandList, &renderBuffer->indexView);
+        driver.commandList->lpVtbl->IASetIndexBuffer(driver.commandList, &renderBuffer->index.view);
     }
 
     int eyeCount = 1;
